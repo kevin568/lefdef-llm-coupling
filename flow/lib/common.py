@@ -39,15 +39,61 @@ def load_case(name, cases_file=None):
     return c
 
 
+def lef_routing_layers(lefs):
+    """Routing layer names in LEF order (technology section)."""
+    import re
+    out = []
+    for l in lefs:
+        t = Path(l).read_text(errors='replace')
+        # layer definitions are "LAYER name" lines without ';' (pin geometry uses "LAYER name ;")
+        heads = [(m.group(1), m.end()) for m in re.finditer(r'^[ \t]*LAYER[ \t]+([^\s;]+)[ \t]*\r?$', t, re.M)]
+        for name, pos in heads:
+            end = re.compile(r'^[ \t]*END[ \t]+' + re.escape(name) + r'\b', re.M).search(t, pos)
+            body = t[pos:end.start()] if end else ''
+            if re.search(r'^\s*TYPE\s+ROUTING\b', body, re.M) and name not in out:
+                out.append(name)
+    return out
+
+
+def check_lef_def(case):
+    """Fail early, with a plain message, when the LEFs lack technology layers or masters used by the DEF."""
+    import re
+    if not lef_routing_layers(case['lefs']):
+        raise StageError('no routing LAYER found in the LEF files: the technology LEF (or a merged tech+cell LEF) must be in --lef, first')
+    macros = set()
+    for l in case['lefs']:
+        macros |= set(re.findall(r'^\s*MACRO\s+(\S+)', Path(l).read_text(errors='replace'), re.M))
+    t = Path(case['def']).read_text(errors='replace')
+    i, j = t.find('\nCOMPONENTS'), t.find('END COMPONENTS')
+    used = set(re.findall(r'^\s*-\s+\S+\s+(\S+)', t[i:j], re.M)) if i >= 0 and j > i else set()
+    missing = sorted(used - macros)
+    if missing:
+        raise StageError(f'{len(missing)} cell/macro type(s) used in the DEF are not defined in the LEF files, e.g. '
+                         f'{", ".join(missing[:8])}. Add the LEF that defines them to --lef.')
+    if 'ROUTED' not in t[t.find('\nNETS'):]:
+        raise StageError('the DEF has no routed nets (no ROUTED wiring in NETS); the flow needs a routed layout')
+    return len(used)
+
+
 def own_case(name, def_file, lefs, layers, rules, pool_nets):
     """Case from command-line paths (relative paths are taken from the current directory)."""
-    if not lefs or not layers:
-        raise StageError('--def needs --lef (technology LEF first, comma-separated) and --layers (e.g. met1-met5)')
+    if not lefs:
+        raise StageError('--def needs --lef (LEF files, comma-separated, technology LEF first)')
+    lef_paths = [str(Path(l).expanduser().resolve()) for l in lefs.split(',') if l]
+    for p in lef_paths:
+        if not Path(p).exists():
+            raise StageError(f'missing input file {p}')
+    if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
+        rl = lef_routing_layers(lef_paths)
+        if len(rl) < 3:
+            raise StageError(f'could not infer --layers from the LEF routing layers {rl}; pass --layers, e.g. met1-met5')
+        layers = f'{rl[1]}-{rl[-1]}'
+        print(f'--layers not given: using {layers} (routing layers in LEF: {", ".join(rl)})')
     if not rules:
         if not layers.startswith('met'):
             raise StageError('--rules is required for a non-SKY130 technology (OpenRCX rules file)')
         rules = str(REPO / 'data/pdk/sky130hd.rcx_rules')
-    c = dict(name=name, lefs=[str(Path(l).expanduser().resolve()) for l in lefs.split(',') if l],
+    c = dict(name=name, lefs=lef_paths,
              layers=layers, rules=str(Path(rules).expanduser().resolve()), pool_nets=pool_nets, split='user', domain='user')
     c['def'] = str(Path(def_file).expanduser().resolve())
     for p in [c['def'], c['rules'], *c['lefs']]:

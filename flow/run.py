@@ -108,6 +108,7 @@ def s0_check(case, out, st):
         if want and C.sha256(p) != want:
             raise C.StageError(f'input file differs from data/SOURCES.json: {p}\n  (line-ending conversion on checkout? see README "Debugging")')
     st.info['inputs_verified'] = True
+    st.info['cell_types_used'] = C.check_lef_def(case)
     if ARGS.policy == 'llm':
         try:
             import torch, transformers, peft, bitsandbytes  # noqa: F401
@@ -437,7 +438,18 @@ def main():
             print(f'\n[FAIL] {name}\n{e}\n  status: {out / name / "status.json"}'); sys.exit(1)
         except Exception:
             print(f'\n[FAIL] {name} (unexpected error)\n{traceback.format_exc()}  status: {out / name / "status.json"}'); sys.exit(1)
-    print(f'\nreport: {out / "report.md"}')
+    ap = out / 's6_apply/apply.json'
+    if ap.exists():
+        A = json.loads(ap.read_text()); b, f = A['baseline'], A['final']
+        print(f'\n=== {case["name"]}: before -> after (policy {A["policy"]}, {A["accepted"]}/{A["tried"]} reroutes kept) ===')
+        print(f'  total coupling  {b["cc_fF"]:10.3f} -> {f["cc_fF"]:10.3f} fF   {A["cc_change_pct"]:+.2f}%')
+        print(f'  wire length     {b["wl_um"]:10.1f} -> {f["wl_um"]:10.1f} um   {A["wl_change_pct"]:+.2f}%')
+        print(f'  vias            {b["vias"]:10d} -> {f["vias"]:10d}      {A["via_change"]:+d}')
+        if A['nets']:
+            nb = sum(x['cc_before_fF'] for x in A['nets']); na = sum(x['cc_after_fF'] for x in A['nets'])
+            print(f'  rerouted nets   {nb:10.3f} -> {na:10.3f} fF   {100. * (na - nb) / nb if nb else 0.:+.2f}%  ({len(A["nets"])} nets)')
+        print(f'  final layout    {A["final_def"]}')
+    print(f'\nfull report: {out / "report.md"}')
 
 
 if __name__ == '__main__':

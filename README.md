@@ -28,13 +28,27 @@ cat out/tempsense/report.md
 **Your own layout** (routed DEF + LEFs; no config file needed):
 
 ```bash
-python flow/run.py mychip --def /path/to/mychip.def --lef /path/to/tech.lef,/path/to/cells.lef --layers met1-met5
-python flow/run.py mychip --def ... --lef ... --layers met1-met5 --nets "vco|clk"   # only reroute matching nets
+python flow/run.py A --def A.def --lef B.lef                        # B.lef = technology + every cell/macro used in A.def
+python flow/run.py A --def A.def --lef tech.lef,cells.lef,macro.lef  # several LEFs: comma-separated, technology first
+python flow/run.py A --def A.def --lef B.lef --nets "vco|clk"        # only reroute nets whose name matches
 ```
 
-`--rules` (OpenRCX rules) defaults to the bundled SKY130 file when `--layers` starts with `met`; pass it for other
-technologies. The top of `out/mychip/report.md` is the before/after table of the combined layout
-(`out/mychip/s6_apply/final.def`): total coupling, wire length and vias, plus each rerouted net's own coupling.
+- `--layers` (signal routing range) defaults to every LEF routing layer except the lowest (SKY130: `met1-met5`).
+- `--rules` (OpenRCX rules) defaults to the bundled SKY130 file for `met*` layers; pass it for other technologies.
+- `s0_check` stops with a plain message if the LEFs lack technology layers or a cell/macro used by the DEF, or if
+  the DEF is not routed.
+
+When the run ends, the terminal prints the key numbers, and `out/A/report.md` holds the full report:
+
+```
+=== A: before -> after (policy llm, 8/9 reroutes kept) ===
+  total coupling      52.193 ->     50.236 fF   -3.75%
+  wire length         2115.7 ->     2101.2 um   -0.68%
+  vias                   756 ->        759      +3
+  rerouted nets       17.445 ->     15.843 fF   -9.18%  (8 nets)
+  final layout    out/A/s6_apply/final.def
+```
+(`tempsense`, measured.) The improved layout is `out/A/s6_apply/final.def` with its parasitics in `final.spef`.
 
 Measured on a 20-core machine with an RTX 5070 and `--jobs 4`: `tempsense` takes 2 minutes with `--route best`
 (including the combining stage `s6_apply`) and 4.6 minutes with `--route all`; `vco_macro` takes 9 minutes with
