@@ -117,7 +117,17 @@ def s0_check(case, out, st):
         if not torch.cuda.is_available():
             raise C.StageError('LLM policy needs a CUDA GPU; use --policy heuristic to run without it')
         st.info['gpu'] = torch.cuda.get_device_name()
-    st.info['case'] = {k: case[k] for k in ('def', 'layers', 'rules', 'split', 'domain')}
+    st.info['case'] = {k: case[k] for k in ('def', 'layers', 'rules', 'split', 'domain', 'normalize', 'tolerate_baseline_drc') if k in case}
+
+
+def known_violations(case, out):
+    """Violations not counted as new: the case's known_violations, plus (with tolerate_baseline_drc) the pre-existing ones
+    found in s2_candidates/baseline_violations.json."""
+    k = [tuple(v) for v in case.get('known_violations', [])]
+    f = out / 's2_candidates/baseline_violations.json'
+    if case.get('tolerate_baseline_drc') and f.exists():
+        k += [tuple(v) for v in json.loads(f.read_text())['violations']]
+    return k
 
 
 def s1_import(case, out, st):
@@ -155,6 +165,15 @@ def s2_candidates(case, out, st):
     pdirs = {n: d / 'pin_access' / f'{j:02d}_{safe(n)}' for j, n in enumerate(nets)}
     with ThreadPoolExecutor(ARGS.jobs) as ex:
         list(ex.map(lambda n: route_job(case, base_def, [n], 'default', pdirs[n]), nets))
+    # pre-existing DRC violations: reported by every router-default reroute (>= 2 nets) or by the last normalize run;
+    # they are only tolerated with --tolerate-baseline-drc (tolerate_baseline_drc in cases.json)
+    sets = [set(G.violations(pdirs[n] / 'drc.rpt')) for n in nets]
+    pre = set.intersection(*sets) if len(sets) >= 2 else set()
+    norm = case.get('normalize')
+    if norm:
+        pre |= set(G.violations(out / 's1_import' / f'normalize_{norm["times"]}' / 'drc.rpt'))
+    (d / 'baseline_violations.json').write_text(json.dumps(dict(violations=sorted(pre)), indent=1))
+    st.info.update(baseline_violations=len(pre), tolerated=bool(case.get('tolerate_baseline_drc')))
     grid = G.gcell_grid(pdirs[nets[0]] / 'route.log')
     if not grid:
         raise C.StageError(f'could not read GCELLGRID from {pdirs[nets[0]] / "route.log"}')
@@ -242,7 +261,7 @@ def s5_extract(case, out, st):
     b = out / 's1_import'
     base = json.loads((b / 'baseline.json').read_text()); base_sp = spef.read(b / 'base.spef'); ref = def_nets(b / 'base.def')
     R = json.loads((out / 's4_route/routed.json').read_text())['routed']
-    known = [tuple(k) for k in case.get('known_violations', [])]
+    known = known_violations(case, out)
 
     def one(r):
         rd = Path(r['dir']); m = dict(r)
@@ -287,7 +306,7 @@ def s6_apply(case, out, st):
         if r['net'] not in pick or S[r['candidate_id']][key] > S[pick[r['net']]['candidate_id']][key]:
             pick[r['net']] = r
     queue = sorted((r for r in pick.values() if r['U'] > 0), key=lambda r: -r['U'])
-    known = [tuple(k) for k in case.get('known_violations', [])]
+    known = known_violations(case, out)
     base_sp = spef.read(b / 'base.spef')
     cur_def, cur_spef, cur_m, cur_sp, cur_nets = b / 'base.def', b / 'base.spef', dict(base), base_sp, def_nets(b / 'base.def')
     steps = []
@@ -437,6 +456,12 @@ def main():
     own.add_argument('--rules', help='OpenRCX rules file (default: bundled SKY130 rules when --layers starts with "met")')
     own.add_argument('--nets', help='regular expression: only nets whose name matches are rerouted, e.g. "vco|clk"')
     own.add_argument('--pool-nets', type=int, default=20, help='how many highest-coupling nets to try (default 20)')
+    own.add_argument('--normalize', metavar='NET[:TIMES]',
+                     help='reroute NET with the router default TIMES times (default 2) before the baseline; for published DEFs '
+                          'that OpenROAD re-patches on its first run (every reroute then changes other nets)')
+    own.add_argument('--tolerate-baseline-drc', action='store_true',
+                     help='do not count pre-existing DRC violations (reported by every router-default reroute, or by the '
+                          'last --normalize run) as new; they are listed in s2_candidates/baseline_violations.json')
     ap.add_argument('--policy', default='llm', choices=['llm', 'heuristic', 'random'])
     ap.add_argument('--adapter', help='LoRA adapter dir (default models/llm_v2/adapter)')
     ap.add_argument('--route', default='best', choices=['best', 'all'], help='best: policy top-1 per net; all: every candidate')
@@ -448,7 +473,8 @@ def main():
     ARGS = ap.parse_args()
     try:
         if ARGS.def_file:
-            case = C.own_case(ARGS.case, ARGS.def_file, ARGS.lef, ARGS.layers, ARGS.rules, ARGS.pool_nets)
+            case = C.own_case(ARGS.case, ARGS.def_file, ARGS.lef, ARGS.layers, ARGS.rules, ARGS.pool_nets,
+                              ARGS.normalize, ARGS.tolerate_baseline_drc)
         else:
             case = C.load_case(ARGS.case, ARGS.cases)
         if ARGS.nets:

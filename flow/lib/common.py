@@ -75,7 +75,20 @@ def check_lef_def(case):
     return len(used)
 
 
-def own_case(name, def_file, lefs, layers, rules, pool_nets):
+def def_net_name(def_file, net):
+    r"""Net name as written in the DEF NETS section (bus bits may be written escaped, e.g. data\[3\])."""
+    import re
+    t = Path(def_file).read_text(errors='replace')
+    i = t.find('\nNETS')
+    names = set(re.findall(r'^\s*-\s+(\S+)', t[i:t.find('END NETS', i)], re.M)) if i >= 0 else set()
+    plain = net.replace('\\', '')
+    for cand in (net, plain, re.sub(r'([\[\]])', r'\\\1', plain)):
+        if cand in names:
+            return cand
+    raise StageError(f'--normalize: net "{net}" not found in the DEF NETS section')
+
+
+def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize=None, tolerate_baseline_drc=False):
     """Case from command-line paths (relative paths are taken from the current directory)."""
     if not lefs:
         raise StageError('--def needs --lef (LEF files, comma-separated, technology LEF first)')
@@ -96,6 +109,13 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets):
     c = dict(name=name, lefs=lef_paths,
              layers=layers, rules=str(Path(rules).expanduser().resolve()), pool_nets=pool_nets, split='user', domain='user')
     c['def'] = str(Path(def_file).expanduser().resolve())
+    if normalize:
+        net, _, times = normalize.rpartition(':')
+        if not net or not times.isdigit():
+            net, times = normalize, '2'
+        c['normalize'] = dict(net=def_net_name(c['def'], net), times=int(times))
+    if tolerate_baseline_drc:
+        c['tolerate_baseline_drc'] = True
     for p in [c['def'], c['rules'], *c['lefs']]:
         if not Path(p).exists():
             raise StageError(f'missing input file {p}')

@@ -38,6 +38,25 @@ python flow/run.py A --def A.def --lef B.lef --nets "vco|clk"        # only rero
 - `s0_check` stops with a plain message if the LEFs lack technology layers or a cell/macro used by the DEF, or if
   the DEF is not routed.
 
+**Published DEFs that OpenROAD re-patches.** On some older published layouts the first OpenROAD detailed route
+also fixes a few pre-existing defects, so every reroute changes other nets (or reports the same old DRC violation)
+and is marked invalid, the router default included. `report.md` then shows `other_nets_changed` or
+`new_violations` on every candidate. Two options handle this:
+
+```bash
+python flow/run.py A --def A.def --lef B.lef --normalize "io_oeb[23]" --tolerate-baseline-drc
+```
+
+- `--normalize NET[:TIMES]`: before the baseline is taken, reroute `NET` (any net outside your targets, e.g. one
+  named in the changed-nets list) with the router default `TIMES` times (default 2). Bus bits may be written plain
+  or escaped.
+- `--tolerate-baseline-drc`: violations that every router-default reroute reports (or that the last `--normalize`
+  run reports) are pre-existing and not counted as new. They are listed in `s2_candidates/baseline_violations.json`.
+
+Both are the command-line form of `normalize` / `known_violations` in `config/cases.json`. Run through the command
+line only, `vco_macro` gets the same baseline DEF (same sha256) and the same tolerated met2 violation as its
+`cases.json` entry.
+
 When the run ends, the terminal prints the key numbers, and `out/A/report.md` holds the full report:
 
 ```
