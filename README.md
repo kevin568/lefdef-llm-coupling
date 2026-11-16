@@ -41,14 +41,25 @@ python flow/run.py A --def A.def --lef B.lef --nets "vco|clk"        # only rero
 When the run ends, the terminal prints the key numbers, and `out/A/report.md` holds the full report:
 
 ```
-=== A: before -> after (policy llm, 8/9 reroutes kept) ===
-  total coupling      52.193 ->     50.236 fF   -3.75%
-  wire length         2115.7 ->     2101.2 um   -0.68%
-  vias                   756 ->        759      +3
-  rerouted nets       17.445 ->     15.843 fF   -9.18%  (8 nets)
-  final layout    out/A/s6_apply/final.def
+=== vco_macro: before -> after (policy llm, 6/14 reroutes kept) ===
+  rerouted nets       89.283 ->      0.669 fF   -99.25%  (6 nets, 4 freed of >=99% coupling)
+  target nets        644.248 ->    520.638 fF   -19.19%  (20 nets: top 20 by coupling)
+  worst net          260.185 ->    260.185 fF   (vco_enb\[1\] -> vco_enb\[1\])
+  design total     58687.719 ->  58610.505 fF   -0.13%  (includes nets not touched)
+  wire length      1046431.3 ->  1046675.2 um   +0.02%
+  vias                  3437 ->       3439      +2
+  final layout    out/vco_macro/s6_apply/final.def
 ```
-(`tempsense`, measured.) The improved layout is `out/A/s6_apply/final.def` with its parasitics in `final.spef`.
+(measured on the analog `vco_macro` top level). The improved layout is `s6_apply/final.def` with its parasitics in
+`final.spef`.
+
+Headline metrics, in order:
+- **rerouted nets**: coupling of the nets whose reroute was kept, before → after. This is what the flow changed.
+- **target nets**: the nets the flow examined (the `pool_nets` highest-coupling nets, or your `--nets` selection,
+  e.g. the analog nets you care about).
+- **worst net**: the largest coupling among the target nets.
+- **design total**: every coupling capacitor in the layout, including nets the flow never touches (e.g. long
+  chip-level IO lines with no better route), so it is a context row.
 
 Measured on a 20-core machine with an RTX 5070 and `--jobs 4`: `tempsense` takes 2 minutes with `--route best`
 (including the combining stage `s6_apply`) and 4.6 minutes with `--route all`; `vco_macro` takes 9 minutes with

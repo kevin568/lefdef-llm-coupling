@@ -316,13 +316,41 @@ def s6_apply(case, out, st):
     nets = [dict(net=s['net'], candidate_id=s['candidate_id'], cc_before_fF=base_sp['per_net_cc'].get(s['net'], 0.),
                  cc_after_fF=cur_sp['per_net_cc'].get(s['net'], 0.)) for s in acc]
     rel = lambda a, z: 100. * (a - z) / z if z else 0.
-    summ = dict(policy=ARGS.policy, baseline={k: base[k] for k in ('cc_fF', 'wl_um', 'vias')}, final=cur_m, U=C.utility(cur_m, base),
+    summ = dict(policy=ARGS.policy, key_metrics=key_metrics(case, out, nets, cur_sp), baseline={k: base[k] for k in ('cc_fF', 'wl_um', 'vias')}, final=cur_m, U=C.utility(cur_m, base),
                 cc_change_pct=rel(cur_m['cc_fF'], base['cc_fF']), wl_change_pct=rel(cur_m['wl_um'], base['wl_um']),
                 via_change=cur_m['vias'] - base['vias'], tried=len(queue), accepted=len(acc), nets=nets,
                 final_def=str(d / 'final.def'), final_spef=str(d / 'final.spef'), steps=steps)
     (d / 'apply.json').write_text(json.dumps(summ, indent=1))
     st.info.update(tried=len(queue), accepted=len(acc), cc_before_fF=round(base['cc_fF'], 3), cc_after_fF=round(cur_m['cc_fF'], 3),
                    cc_change_pct=round(summ['cc_change_pct'], 2))
+
+
+def key_metrics(case, out, nets, final_sp=None):
+    """Headline metrics: the rerouted nets, the target set (nets the flow examined: top coupling or --nets), worst net."""
+    rel = lambda a, z: 100. * (a - z) / z if z else 0.
+    base_sp = spef.read(out / 's1_import/base.spef'); final_sp = final_sp or spef.read(out / 's6_apply/final.spef')
+    pool = json.loads((out / 's2_candidates/candidates.json').read_text())['nets']
+    tb = {n: base_sp['per_net_cc'].get(n, 0.) for n in pool}; ta = {n: final_sp['per_net_cc'].get(n, 0.) for n in pool}
+    rb, ra = sum(x['cc_before_fF'] for x in nets), sum(x['cc_after_fF'] for x in nets)
+    per = sorted(rel(x['cc_after_fF'], x['cc_before_fF']) for x in nets if x['cc_before_fF'])
+    wb = max(tb, key=tb.get) if tb else None; wa = max(ta, key=ta.get) if ta else None
+    return dict(
+        rerouted_nets=dict(n=len(nets), cc_before_fF=rb, cc_after_fF=ra, change_pct=rel(ra, rb),
+                           median_net_change_pct=per[len(per) // 2] if per else None,
+                           nets_freed=sum(x['cc_after_fF'] <= .01 * x['cc_before_fF'] for x in nets)),
+        target_nets=dict(n=len(pool), cc_before_fF=sum(tb.values()), cc_after_fF=sum(ta.values()),
+                         change_pct=rel(sum(ta.values()), sum(tb.values())), selection=case.get('net_regex') or f'top {len(pool)} by coupling'),
+        worst_net=dict(before=[wb, tb.get(wb, 0.)], after=[wa, ta.get(wa, 0.)]))
+
+
+def load_apply(case, out):
+    ap = out / 's6_apply/apply.json'
+    if not ap.exists():
+        return None
+    A = json.loads(ap.read_text())
+    if 'key_metrics' not in A:   # outputs written before the headline metrics existed
+        A['key_metrics'] = key_metrics(case, out, A['nets']); ap.write_text(json.dumps(A, indent=1))
+    return A
 
 
 def s7_report(case, out, st):
@@ -334,14 +362,21 @@ def s7_report(case, out, st):
     lines = [f'# Coupling report: {case["name"]}', '',
              f'Baseline: total coupling {base["cc_fF"]:.3f} fF, wire length {base["wl_um"]:.1f} um, vias {base["vias"]}, '
              f'{base["instances"]} instances, {base["signal_nets"]} signal nets.', '']
-    ap = out / 's6_apply/apply.json'
-    if ap.exists():
-        A = json.loads(ap.read_text()); f = A['final']
+    A = load_apply(case, out)
+    if A:
+        f = A['final']; K = A['key_metrics']; r, t = K['rerouted_nets'], K['target_nets']
+        wb, wa = K['worst_net']['before'], K['worst_net']['after']
+        med = f'{r["median_net_change_pct"]:+.1f}%' if r['median_net_change_pct'] is not None else '—'
         lines += ['## Before / after (s6_apply: accepted reroutes combined in one layout)', '',
-                  '| | before | after | change |', '|---|---:|---:|---:|',
-                  f'| total coupling (fF) | {base["cc_fF"]:.3f} | {f["cc_fF"]:.3f} | {A["cc_change_pct"]:+.2f}% |',
+                  '| key metric | before | after | change |', '|---|---:|---:|---:|',
+                  f'| **coupling of the {r["n"]} rerouted nets (fF)** | {r["cc_before_fF"]:.3f} | {r["cc_after_fF"]:.3f} | **{r["change_pct"]:+.2f}%** |',
+                  f'| coupling of the {t["n"]} target nets ({t["selection"]}) (fF) | {t["cc_before_fF"]:.3f} | {t["cc_after_fF"]:.3f} | {t["change_pct"]:+.2f}% |',
+                  f'| worst target net (fF) | {wb[1]:.3f} `{wb[0]}` | {wa[1]:.3f} `{wa[0]}` | {100. * (wa[1] - wb[1]) / wb[1] if wb[1] else 0.:+.2f}% |',
+                  f'| design total coupling (fF) | {base["cc_fF"]:.3f} | {f["cc_fF"]:.3f} | {A["cc_change_pct"]:+.2f}% |',
                   f'| wire length (um) | {base["wl_um"]:.1f} | {f["wl_um"]:.1f} | {A["wl_change_pct"]:+.2f}% |',
                   f'| vias | {base["vias"]} | {f["vias"]} | {A["via_change"]:+d} |', '',
+                  f'Rerouted nets: median per-net change {med}, {r["nets_freed"]} of {r["n"]} nets lose ≥99% of their coupling. '
+                  'Design total includes nets the flow does not touch (e.g. long chip-level IO lines), so it is a context row.', '',
                   f'U = {A["U"]:+.4f}. {A["accepted"]} of {A["tried"]} candidate reroutes accepted. Final layout: `{A["final_def"]}` '
                   f'(SPEF `{A["final_spef"]}`).', '']
         if A['nets']:
@@ -438,16 +473,18 @@ def main():
             print(f'\n[FAIL] {name}\n{e}\n  status: {out / name / "status.json"}'); sys.exit(1)
         except Exception:
             print(f'\n[FAIL] {name} (unexpected error)\n{traceback.format_exc()}  status: {out / name / "status.json"}'); sys.exit(1)
-    ap = out / 's6_apply/apply.json'
-    if ap.exists():
-        A = json.loads(ap.read_text()); b, f = A['baseline'], A['final']
+    A = load_apply(case, out) if C.stage_ok(out, 's6_apply') else None
+    if A:
+        b, f = A['baseline'], A['final']; K = A['key_metrics']
+        r, t, w = K['rerouted_nets'], K['target_nets'], K['worst_net']
         print(f'\n=== {case["name"]}: before -> after (policy {A["policy"]}, {A["accepted"]}/{A["tried"]} reroutes kept) ===')
-        print(f'  total coupling  {b["cc_fF"]:10.3f} -> {f["cc_fF"]:10.3f} fF   {A["cc_change_pct"]:+.2f}%')
+        print(f'  rerouted nets   {r["cc_before_fF"]:10.3f} -> {r["cc_after_fF"]:10.3f} fF   {r["change_pct"]:+.2f}%  '
+              f'({r["n"]} nets, {r["nets_freed"]} freed of >=99% coupling)')
+        print(f'  target nets     {t["cc_before_fF"]:10.3f} -> {t["cc_after_fF"]:10.3f} fF   {t["change_pct"]:+.2f}%  ({t["n"]} nets: {t["selection"]})')
+        print(f'  worst net       {w["before"][1]:10.3f} -> {w["after"][1]:10.3f} fF   ({w["before"][0]} -> {w["after"][0]})')
+        print(f'  design total    {b["cc_fF"]:10.3f} -> {f["cc_fF"]:10.3f} fF   {A["cc_change_pct"]:+.2f}%  (includes nets not touched)')
         print(f'  wire length     {b["wl_um"]:10.1f} -> {f["wl_um"]:10.1f} um   {A["wl_change_pct"]:+.2f}%')
         print(f'  vias            {b["vias"]:10d} -> {f["vias"]:10d}      {A["via_change"]:+d}')
-        if A['nets']:
-            nb = sum(x['cc_before_fF'] for x in A['nets']); na = sum(x['cc_after_fF'] for x in A['nets'])
-            print(f'  rerouted nets   {nb:10.3f} -> {na:10.3f} fF   {100. * (na - nb) / nb if nb else 0.:+.2f}%  ({len(A["nets"])} nets)')
         print(f'  final layout    {A["final_def"]}')
     print(f'\nfull report: {out / "report.md"}')
 
