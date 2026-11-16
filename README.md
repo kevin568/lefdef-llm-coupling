@@ -123,7 +123,8 @@ intermediate file can be opened in OpenROAD or a text editor.
 ## Models and reference results
 
 See `models/README.md` and `docs/RESULTS.md`. In short, on the seven held-out test layouts:
-- The rerouting flow is legal on 100% of the 1,634 candidate routes (`vco_macro`: 58/60).
+- The rerouting flow is legal on 1,574 of the 1,576 candidate routes (99.9%): 1,516/1,516 on the six standard-cell
+  layouts, 58/60 on `vco_macro`.
 - On the analog `vco_macro` top level, the four VCO nets the fine-tuned LLM chose in a four-round loop drop from
   536.5 fF to 66.8 fF of coupling (−87.5%); single VCO phase/enable lines (e.g. `vco_enb[2]`, 248 fF) can be
   freed of coupling entirely.
