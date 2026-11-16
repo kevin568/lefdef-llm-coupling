@@ -5,8 +5,10 @@
   python flow/run.py tempsense --policy heuristic   # no GPU needed
   python flow/run.py tempsense --route all          # route every candidate (ground truth for ranking metrics)
   python flow/run.py tempsense --from s4_route      # re-run from one stage (earlier stages must be ok)
+  python flow/run.py mychip --def my.def --lef tech.lef,cells.lef --layers met1-met5   # your own layout
 
 Every stage writes out/<case>/<stage>/status.json and keeps every OpenROAD log next to its outputs.
+s6_apply commits the accepted reroutes one after another into one layout: out/<case>/s6_apply/final.def.
 """
 import argparse
 import json
@@ -21,7 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import common as C                     # noqa: E402
 from lib import spef, guides as G, candidates as K, features as F, proxy  # noqa: E402
 
-STAGES = ['s0_check', 's1_import', 's2_candidates', 's3_score', 's4_route', 's5_extract', 's6_report']
+STAGES = ['s0_check', 's1_import', 's2_candidates', 's3_score', 's4_route', 's5_extract', 's6_apply', 's7_report']
+
+
+def pct(x):
+    return f'{100. * (x["cc_after_fF"] - x["cc_before_fF"]) / x["cc_before_fF"]:+.1f}%' if x['cc_before_fF'] else '—'
 
 
 def safe(name):
@@ -74,6 +80,8 @@ def pm_nets(geo):
 def net_ok(case, geo, n):
     v = geo['nets'][n]
     if v['signal_type'] not in C.SIG or not v['routed'] or not (2 <= len(v['pins']) <= 8):
+        return False
+    if case.get('net_regex') and not re.search(case['net_regex'], n):
         return False
     if case.get('net_filter') == 'vco_macro_pin':   # analog VCO nets: at least one pin on a VCO macro instance
         return any(p.get('macro') and p['name'].split('/')[0].startswith('vco_') and not p['name'].split('/')[0].startswith('vco_adc')
@@ -262,7 +270,61 @@ def s5_extract(case, out, st):
     st.info.update(measured=len(rows), valid=sum(bool(r.get('valid')) for r in rows))
 
 
-def s6_report(case, out, st):
+def s6_apply(case, out, st):
+    """Commit reroutes into one layout: for each net take the policy's top-scored routed tree, keep only those whose
+    single-net U > 0, then reroute them one after another on the evolving DEF (largest U first). A step is kept when it
+    is legal against the current layout and improves U again; otherwise it is skipped. Output: final.def / final.spef."""
+    d = st.dir; b = out / 's1_import'
+    M = json.loads((out / 's5_extract/measurements.json').read_text()); base = M['baseline']
+    S = {r['candidate_id']: r for r in json.loads((out / 's3_score/scores.json').read_text())['rows']}
+    cand = {c['candidate_id']: c for c in json.loads((out / 's2_candidates/candidates.json').read_text())['candidates']}
+    key = ARGS.policy
+    pick = {}
+    for r in M['rows']:
+        if r['kind'] == 'default' or not r.get('valid'):
+            continue
+        if r['net'] not in pick or S[r['candidate_id']][key] > S[pick[r['net']]['candidate_id']][key]:
+            pick[r['net']] = r
+    queue = sorted((r for r in pick.values() if r['U'] > 0), key=lambda r: -r['U'])
+    known = [tuple(k) for k in case.get('known_violations', [])]
+    base_sp = spef.read(b / 'base.spef')
+    cur_def, cur_spef, cur_m, cur_sp, cur_nets = b / 'base.def', b / 'base.spef', dict(base), base_sp, def_nets(b / 'base.def')
+    steps = []
+    for i, r in enumerate(queue):
+        n = r['net']; sd = d / 'steps' / f'{i:02d}_{safe(n)}'
+        rec = dict(step=i, net=n, candidate_id=r['candidate_id'], single_U=r['U'], dir=str(sd))
+        try:
+            route_job(case, cur_def, [n], 'guide', sd, {n: cand[r['candidate_id']]['guides']})
+            extract_job(case, sd / 'out.def', sd / 'out.spef', sd / 'extract.log')
+            export_job(case, sd / 'out.def', sd / 'geo.json', sd / 'export.log')
+        except C.StageError as e:
+            rec.update(accepted=False, reason=str(e).splitlines()[0]); steps.append(rec); continue
+        geo = json.loads((sd / 'geo.json').read_text()); sp = spef.read(sd / 'out.spef'); m = design_metrics(geo, sp)
+        new_viol = [v for v in G.violations(sd / 'drc.rpt') if v not in known]
+        new_nets = def_nets(sd / 'out.def')
+        changed = sorted(x for x in cur_nets if x != n and cur_nets[x] != new_nets.get(x))
+        step_u = C.utility(m, cur_m)
+        why = [w for w, bad in [('target not routed', not geo['nets'][n]['routed']), (f'{len(new_viol)} new DRC violation(s)', new_viol),
+                                (f'{len(changed)} other net(s) changed', changed), (f'no further gain (step U {step_u:+.4f})', step_u <= 0)] if bad]
+        rec.update(accepted=not why, reason=', '.join(why), step_U=step_u, **m)
+        if not why:
+            cur_def, cur_spef, cur_m, cur_sp, cur_nets = sd / 'out.def', sd / 'out.spef', m, sp, new_nets
+        steps.append(rec)
+    (d / 'final.def').write_bytes(Path(cur_def).read_bytes()); (d / 'final.spef').write_bytes(Path(cur_spef).read_bytes())
+    acc = [s for s in steps if s['accepted']]
+    nets = [dict(net=s['net'], candidate_id=s['candidate_id'], cc_before_fF=base_sp['per_net_cc'].get(s['net'], 0.),
+                 cc_after_fF=cur_sp['per_net_cc'].get(s['net'], 0.)) for s in acc]
+    rel = lambda a, z: 100. * (a - z) / z if z else 0.
+    summ = dict(policy=ARGS.policy, baseline={k: base[k] for k in ('cc_fF', 'wl_um', 'vias')}, final=cur_m, U=C.utility(cur_m, base),
+                cc_change_pct=rel(cur_m['cc_fF'], base['cc_fF']), wl_change_pct=rel(cur_m['wl_um'], base['wl_um']),
+                via_change=cur_m['vias'] - base['vias'], tried=len(queue), accepted=len(acc), nets=nets,
+                final_def=str(d / 'final.def'), final_spef=str(d / 'final.spef'), steps=steps)
+    (d / 'apply.json').write_text(json.dumps(summ, indent=1))
+    st.info.update(tried=len(queue), accepted=len(acc), cc_before_fF=round(base['cc_fF'], 3), cc_after_fF=round(cur_m['cc_fF'], 3),
+                   cc_change_pct=round(summ['cc_change_pct'], 2))
+
+
+def s7_report(case, out, st):
     from statistics import mean
     M = json.loads((out / 's5_extract/measurements.json').read_text()); base = M['baseline']; rows = M['rows']
     S = {r['candidate_id']: r for r in json.loads((out / 's3_score/scores.json').read_text())['rows']}
@@ -270,8 +332,26 @@ def s6_report(case, out, st):
     trees = [r for r in rows if r['kind'] != 'default']; dflt = {r['net']: r for r in rows if r['kind'] == 'default'}
     lines = [f'# Coupling report: {case["name"]}', '',
              f'Baseline: total coupling {base["cc_fF"]:.3f} fF, wire length {base["wl_um"]:.1f} um, vias {base["vias"]}, '
-             f'{base["instances"]} instances, {base["signal_nets"]} signal nets.', '',
-             f'Policy `{ARGS.policy}`, route mode `{ARGS.route}`. One net rerouted per row (OpenROAD ECO), measured by OpenRCX.', '',
+             f'{base["instances"]} instances, {base["signal_nets"]} signal nets.', '']
+    ap = out / 's6_apply/apply.json'
+    if ap.exists():
+        A = json.loads(ap.read_text()); f = A['final']
+        lines += ['## Before / after (s6_apply: accepted reroutes combined in one layout)', '',
+                  '| | before | after | change |', '|---|---:|---:|---:|',
+                  f'| total coupling (fF) | {base["cc_fF"]:.3f} | {f["cc_fF"]:.3f} | {A["cc_change_pct"]:+.2f}% |',
+                  f'| wire length (um) | {base["wl_um"]:.1f} | {f["wl_um"]:.1f} | {A["wl_change_pct"]:+.2f}% |',
+                  f'| vias | {base["vias"]} | {f["vias"]} | {A["via_change"]:+d} |', '',
+                  f'U = {A["U"]:+.4f}. {A["accepted"]} of {A["tried"]} candidate reroutes accepted. Final layout: `{A["final_def"]}` '
+                  f'(SPEF `{A["final_spef"]}`).', '']
+        if A['nets']:
+            lines += ['| rerouted net | coupling before → after (fF) | change |', '|---|---|---:|']
+            lines += [f'| {x["net"]} | {x["cc_before_fF"]:.2f} → {x["cc_after_fF"]:.2f} | {pct(x)} |' for x in A['nets']]
+            lines += ['']
+        sk = [s for s in A['steps'] if not s['accepted']]
+        if sk:
+            lines += ['Skipped while combining: ' + '; '.join(f'{s["net"]} ({s["reason"]}, `{s["dir"]}`)' for s in sk), '']
+    lines += ['## Single-net reroutes (each measured alone against the baseline)', '',
+              f'Policy `{ARGS.policy}`, route mode `{ARGS.route}`. One net rerouted per row (OpenROAD ECO), measured by OpenRCX.', '',
              '| net | candidate | valid | net CC before → after (fF) | design ΔCC (fF) | U | router default: net CC after / U |',
              '|---|---|---|---|---:|---:|---|']
     shown = trees if ARGS.route != 'all' else sorted(trees, key=lambda r: -S[r['candidate_id']].get(pol, 0))
@@ -313,7 +393,14 @@ def s6_report(case, out, st):
 def main():
     global ARGS
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('case', help='case name from config/cases.json')
+    ap.add_argument('case', help='case name from config/cases.json, or any name for your own layout (with --def)')
+    own = ap.add_argument_group('your own layout (no need to edit config/cases.json)')
+    own.add_argument('--def', dest='def_file', help='routed DEF file')
+    own.add_argument('--lef', help='LEF files, comma-separated, technology LEF first')
+    own.add_argument('--layers', help='signal routing layer range, e.g. met1-met5 (SKY130) or metal2-metal6 (Nangate45)')
+    own.add_argument('--rules', help='OpenRCX rules file (default: bundled SKY130 rules when --layers starts with "met")')
+    own.add_argument('--nets', help='regular expression: only nets whose name matches are rerouted, e.g. "vco|clk"')
+    own.add_argument('--pool-nets', type=int, default=20, help='how many highest-coupling nets to try (default 20)')
     ap.add_argument('--policy', default='llm', choices=['llm', 'heuristic', 'random'])
     ap.add_argument('--adapter', help='LoRA adapter dir (default models/llm_v2/adapter)')
     ap.add_argument('--route', default='best', choices=['best', 'all'], help='best: policy top-1 per net; all: every candidate')
@@ -324,7 +411,12 @@ def main():
     ap.add_argument('--cases', default=None, help='alternative cases.json')
     ARGS = ap.parse_args()
     try:
-        case = C.load_case(ARGS.case, ARGS.cases)
+        if ARGS.def_file:
+            case = C.own_case(ARGS.case, ARGS.def_file, ARGS.lef, ARGS.layers, ARGS.rules, ARGS.pool_nets)
+        else:
+            case = C.load_case(ARGS.case, ARGS.cases)
+        if ARGS.nets:
+            case['net_regex'] = ARGS.nets
     except C.StageError as e:
         print(f'ERROR: {e}'); sys.exit(2)
     out = Path(ARGS.out or C.REPO / 'out' / ARGS.case).resolve(); out.mkdir(parents=True, exist_ok=True)

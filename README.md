@@ -25,8 +25,21 @@ python flow/run.py tempsense --route all              # route every candidate: r
 cat out/tempsense/report.md
 ```
 
-Measured on a 20-core machine with an RTX 5070 and `--jobs 4`: `tempsense` takes 1.5 minutes with `--route best`
-and 4.6 minutes with `--route all`; `vco_macro` takes 9 minutes with `--route best`.
+**Your own layout** (routed DEF + LEFs; no config file needed):
+
+```bash
+python flow/run.py mychip --def /path/to/mychip.def --lef /path/to/tech.lef,/path/to/cells.lef --layers met1-met5
+python flow/run.py mychip --def ... --lef ... --layers met1-met5 --nets "vco|clk"   # only reroute matching nets
+```
+
+`--rules` (OpenRCX rules) defaults to the bundled SKY130 file when `--layers` starts with `met`; pass it for other
+technologies. The top of `out/mychip/report.md` is the before/after table of the combined layout
+(`out/mychip/s6_apply/final.def`): total coupling, wire length and vias, plus each rerouted net's own coupling.
+
+Measured on a 20-core machine with an RTX 5070 and `--jobs 4`: `tempsense` takes 2 minutes with `--route best`
+(including the combining stage `s6_apply`) and 4.6 minutes with `--route all`; `vco_macro` takes 9 minutes with
+`--route best` before `s6_apply`. Example (`tempsense`, LLM, `--route best`): 8 of 9 reroutes combined, total coupling
+52.193 → 50.236 fF (−3.75%), wire length −0.7%, +3 vias.
 
 **Check your installation** with `tempsense`: the baseline must read total coupling `52.193 fF`, wire length
 `2115.7 um`, `756` vias; `s2_candidates` must report 20 nets and 212 candidates (192 trees + 20 router defaults).
@@ -49,7 +62,7 @@ All are public, OpenLane- or OpenROAD-routed layouts, copied unmodified (`data/S
 | `adc_clkgen`, `config_reg_mux` | test | digital blocks |
 | `caravel_clocking`, `spare_logic_block`, `mprj_logic_high`, `const_gen`, `housekeeping`, `gcd_nangate45` | train | layouts used to fine-tune `models/llm_wu121_ft` |
 
-To run your own layout, add an entry to `config/cases.json`: `def`, `lefs` (technology LEF first), `layers`
+To run your own layout, either use `--def/--lef/--layers` (Quick start) or add an entry to `config/cases.json`: `def`, `lefs` (technology LEF first), `layers`
 (signal routing range, e.g. `met1-met5`), `rules` (OpenRCX rules for the technology), `pool_nets` (how many
 high-coupling nets to try).
 
@@ -67,7 +80,8 @@ its last lines. Fix the cause and resume with `--from <stage>`; finished stages 
 | `s3_score` | LLM score (`logit Yes - logit No`) for every tree, plus heuristic and random scores | `scores.json` | GPU / model download |
 | `s4_route` | OpenROAD ECO: rip up one net, read the candidate's guides, `detailed_route` | `runs/<id>/out.def`, `drc.rpt`, `route.log` | `runs/<id>/route.log`; failures are listed in `routed.json` |
 | `s5_extract` | OpenRCX on every routed DEF; legality checks; coupling metrics | `runs/<id>/out.spef`, `metrics.json`, `measurements.json` | `runs/<id>/extract.log` |
-| `s6_report` | tables, ranking metrics (`--route all`), list of invalid reroutes with reasons and run dirs | `report.md`, `report.json` | — |
+| `s6_apply` | combine: per net the policy's top-scored routed tree with single-net U > 0, rerouted one after another on the evolving DEF (largest U first); a step is kept only if it is legal against the current layout and improves U again | `final.def`, `final.spef`, `apply.json`, `steps/<n>_<net>/` | `steps/*/route.log`; skipped steps are listed with reasons |
+| `s7_report` | before/after of the combined layout, per-net single-reroute table, ranking metrics (`--route all`), invalid reroutes with reasons and run dirs | `report.md`, `report.json` | — |
 
 Run a single stage with `--only <stage>`. Everything a stage reads comes from earlier stage folders, so any
 intermediate file can be opened in OpenROAD or a text editor.

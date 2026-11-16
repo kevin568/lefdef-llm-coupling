@@ -39,6 +39,23 @@ def load_case(name, cases_file=None):
     return c
 
 
+def own_case(name, def_file, lefs, layers, rules, pool_nets):
+    """Case from command-line paths (relative paths are taken from the current directory)."""
+    if not lefs or not layers:
+        raise StageError('--def needs --lef (technology LEF first, comma-separated) and --layers (e.g. met1-met5)')
+    if not rules:
+        if not layers.startswith('met'):
+            raise StageError('--rules is required for a non-SKY130 technology (OpenRCX rules file)')
+        rules = str(REPO / 'data/pdk/sky130hd.rcx_rules')
+    c = dict(name=name, lefs=[str(Path(l).expanduser().resolve()) for l in lefs.split(',') if l],
+             layers=layers, rules=str(Path(rules).expanduser().resolve()), pool_nets=pool_nets, split='user', domain='user')
+    c['def'] = str(Path(def_file).expanduser().resolve())
+    for p in [c['def'], c['rules'], *c['lefs']]:
+        if not Path(p).exists():
+            raise StageError(f'missing input file {p}')
+    return c
+
+
 def openroad_bin():
     exe = os.environ.get('OPENROAD', 'openroad')
     if shutil.which(exe) is None and not Path(exe).exists():
