@@ -25,37 +25,35 @@ python flow/run.py tempsense --route all              # route every candidate: r
 cat out/tempsense/report.md
 ```
 
-**Your own layout** (routed DEF + LEFs; no config file needed):
+**Your own layout**: give the routed DEF, then its LEF files or folders. Nothing else is needed.
 
 ```bash
-python flow/run.py A --def A.def --lef B.lef                        # B.lef = technology + every cell/macro used in A.def
-python flow/run.py A --def A.def --lef tech.lef,cells.lef,macro.lef  # several LEFs: comma-separated, technology first
-python flow/run.py A --def A.def --lef B.lef --nets "vco|clk"        # only reroute nets whose name matches
+python flow/run.py A.def B.lef               # B.lef: technology + cells, or several files / folders
+python flow/run.py A.def tech.lef macros/    # a folder means every *.lef in it
+python flow/run.py A.def B.lef --nets vco    # only reroute nets whose name matches (regular expression)
 ```
 
-- `--layers` (signal routing range) defaults to every LEF routing layer except the lowest (SKY130: `met1-met5`).
-- `--rules` (OpenRCX rules) defaults to the bundled SKY130 file for `met*` layers; pass it for other technologies.
-- `s0_check` stops with a plain message if the LEFs lack technology layers or a cell/macro used by the DEF, or if
-  the DEF is not routed.
+What is decided for you (each can be overridden):
+- **LEF order**: the technology LEF (the one with routing `LAYER` definitions) is read first. A folder with two
+  technologies (e.g. SKY130 and Nangate45) stops with a message naming them.
+- **Routing layers** (`--layers`): every LEF routing layer except the lowest (SKY130: `met1-met5`).
+- **Extraction rules** (`--rules`): the bundled SKY130 file for `met*` layers; pass the OpenRCX rules for other
+  technologies.
+- **Policy** (`--policy`): the LLM when a CUDA GPU and its packages are present, otherwise the geometric heuristic.
+- **Published DEFs that OpenROAD re-patches** (`--normalize auto`): on some older layouts the first OpenROAD detailed
+  route also fixes pre-existing defects, so every reroute would change other nets and be marked invalid. Stage
+  `s1_import` reroutes one short 2-pin net and compares every other net. If nothing else changed (e.g. `tempsense`),
+  the DEF is used as it is. Otherwise the patched DEF becomes the baseline, and the terminal prints a note.
+  `s1_import/normalize.json` records the probe nets and which nets were patched. `--normalize off` disables it;
+  `--normalize NET` reroutes a net you choose.
+- **Pre-existing DRC violations**: a violation that every router-default reroute reports is listed in
+  `s2_candidates/baseline_violations.json` and not counted as new. `--strict` counts it.
+- `s0_check` stops with a plain message if a cell/macro used by the DEF is missing from the LEFs or the DEF is not
+  routed.
 
-**Published DEFs that OpenROAD re-patches.** On some older published layouts the first OpenROAD detailed route
-also fixes a few pre-existing defects, so every reroute changes other nets (or reports the same old DRC violation)
-and is marked invalid, the router default included. `report.md` then shows `other_nets_changed` or
-`new_violations` on every candidate. Two options handle this:
-
-```bash
-python flow/run.py A --def A.def --lef B.lef --normalize "io_oeb[23]" --tolerate-baseline-drc
-```
-
-- `--normalize NET[:TIMES]`: before the baseline is taken, reroute `NET` (any net outside your targets, e.g. one
-  named in the changed-nets list) with the router default `TIMES` times (default 2). Bus bits may be written plain
-  or escaped.
-- `--tolerate-baseline-drc`: violations that every router-default reroute reports (or that the last `--normalize`
-  run reports) are pre-existing and not counted as new. They are listed in `s2_candidates/baseline_violations.json`.
-
-Both are the command-line form of `normalize` / `known_violations` in `config/cases.json`. Run through the command
-line only, `vco_macro` gets the same baseline DEF (same sha256) and the same tolerated met2 violation as its
-`cases.json` entry.
+Checked with nothing but `A.def B.lef` (plus `--nets`): `tempsense` keeps its published DEF (same baseline sha256
+as the bundled case); the raw VCO-ADC v2 top level and `vco_macro` are detected as re-patched, patched
+automatically, and give valid reroutes (`vco_macro`: the same tolerated met2 violation as its `cases.json` entry).
 
 When the run ends, the terminal prints the key numbers, and `out/A/report.md` holds the full report:
 
@@ -106,7 +104,7 @@ All are public, OpenLane- or OpenROAD-routed layouts, copied unmodified (`data/S
 | `adc_clkgen`, `config_reg_mux` | test | digital blocks |
 | `caravel_clocking`, `spare_logic_block`, `mprj_logic_high`, `const_gen`, `housekeeping`, `gcd_nangate45` | train | layouts used to fine-tune `models/llm_wu121_ft` |
 
-To run your own layout, either use `--def/--lef/--layers` (Quick start) or add an entry to `config/cases.json`: `def`, `lefs` (technology LEF first), `layers`
+To run your own layout, either use `python flow/run.py A.def B.lef` (Quick start) or add an entry to `config/cases.json`: `def`, `lefs` (technology LEF first), `layers`
 (signal routing range, e.g. `met1-met5`), `rules` (OpenRCX rules for the technology), `pool_nets` (how many
 high-coupling nets to try).
 
@@ -154,5 +152,6 @@ See `models/README.md` and `docs/RESULTS.md`. In short, on the seven held-out te
 - `vco_macro`: OpenROAD's detailed router patches pre-existing defects at two VCO macro pins the first time it runs
   on the published DEF, so the baseline is that DEF after two router-default reroutes of one net, and one
   pre-existing met2 spacing violation at a VCO pin is tolerated in every run (`config/cases.json`, `note`).
-- Candidate generation is seeded by the net name, so candidates, guides and prompts are reproducible. LLM scores
-  reproduce to within about 0.01 across GPUs and batch composition.
+- Candidate generation is seeded by the net name, so candidates, guides and prompts are reproducible. The 4-bit
+  LLM scores are not bit-exact between runs (on `tempsense`, two runs differed by up to 0.19), so a net whose top
+  trees score almost the same can get a different pick; `--policy heuristic` is deterministic.

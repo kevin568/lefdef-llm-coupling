@@ -88,14 +88,37 @@ def def_net_name(def_file, net):
     raise StageError(f'--normalize: net "{net}" not found in the DEF NETS section')
 
 
-def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize=None, tolerate_baseline_drc=False):
+def lef_files(items):
+    """LEF paths from files, folders (every *.lef inside) or comma-separated lists; technology LEF(s) first."""
+    paths = []
+    for it in items:
+        for s in str(it).split(','):
+            if not s:
+                continue
+            p = Path(s).expanduser().resolve()
+            if p.is_dir():
+                found = sorted(p.glob('*.lef'))
+                if not found:
+                    raise StageError(f'no *.lef file in folder {p}')
+                paths += found
+            elif p.exists():
+                paths.append(p)
+            else:
+                raise StageError(f'missing input file {p}')
+    paths = list(dict.fromkeys(str(p) for p in paths))
+    # the technology LEF (routing LAYER definitions) must be read first; keep the given order otherwise
+    tech = [p for p in paths if lef_routing_layers([p])]
+    if len(tech) > 1:
+        raise StageError('several technology LEFs (with routing LAYER definitions): '
+                         + ', '.join(Path(p).name for p in tech) + '. Give only the one for this layout.')
+    return tech + [p for p in paths if p not in tech]
+
+
+def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', strict=False):
     """Case from command-line paths (relative paths are taken from the current directory)."""
     if not lefs:
-        raise StageError('--def needs --lef (LEF files, comma-separated, technology LEF first)')
-    lef_paths = [str(Path(l).expanduser().resolve()) for l in lefs.split(',') if l]
-    for p in lef_paths:
-        if not Path(p).exists():
-            raise StageError(f'missing input file {p}')
+        raise StageError('give the LEF files after the DEF: python flow/run.py A.def B.lef (files or folders)')
+    lef_paths = lef_files(lefs)
     if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
         rl = lef_routing_layers(lef_paths)
         if len(rl) < 3:
@@ -109,12 +132,14 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize=None, tol
     c = dict(name=name, lefs=lef_paths,
              layers=layers, rules=str(Path(rules).expanduser().resolve()), pool_nets=pool_nets, split='user', domain='user')
     c['def'] = str(Path(def_file).expanduser().resolve())
-    if normalize:
+    if normalize == 'auto':
+        c['normalize'] = 'auto'
+    elif normalize and normalize != 'off':
         net, _, times = normalize.rpartition(':')
         if not net or not times.isdigit():
             net, times = normalize, '2'
         c['normalize'] = dict(net=def_net_name(c['def'], net), times=int(times))
-    if tolerate_baseline_drc:
+    if not strict:
         c['tolerate_baseline_drc'] = True
     for p in [c['def'], c['rules'], *c['lefs']]:
         if not Path(p).exists():

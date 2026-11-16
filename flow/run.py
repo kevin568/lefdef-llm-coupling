@@ -5,7 +5,7 @@
   python flow/run.py tempsense --policy heuristic   # no GPU needed
   python flow/run.py tempsense --route all          # route every candidate (ground truth for ranking metrics)
   python flow/run.py tempsense --from s4_route      # re-run from one stage (earlier stages must be ok)
-  python flow/run.py mychip --def my.def --lef tech.lef,cells.lef --layers met1-met5   # your own layout
+  python flow/run.py A.def B.lef                    # your own layout: routed DEF + LEF files or folders
 
 Every stage writes out/<case>/<stage>/status.json and keeps every OpenROAD log next to its outputs.
 s6_apply commits the accepted reroutes one after another into one layout: out/<case>/s6_apply/final.def.
@@ -130,17 +130,54 @@ def known_violations(case, out):
     return k
 
 
+def auto_normalize(case, d, base_def, st):
+    """Some published DEFs are re-patched by OpenROAD's detailed router on its first run (every reroute then also changes
+    other nets). Probe: reroute one short 2-pin net with the router default and compare every other net. If nothing else
+    changed, the DEF is kept as it is. Otherwise the patched DEF becomes the baseline, repeated until a probe reroute
+    changes no other net (at most 4 rounds; from round 3 the re-patched net itself is rerouted)."""
+    ref = def_nets(base_def)
+    two_pin = [n for n, t in ref.items() if 'ROUTED' in t and len(re.findall(r'\(\s*\S+\s+\S+\s*\)', t.split('+')[0])) == 2
+               and not re.search(r'USE\s+(POWER|GROUND)', t) and not (case.get('net_regex') and re.search(case['net_regex'], n))]
+    if not two_pin:
+        return base_def
+    net = probe = min(two_pin, key=lambda n: (len(ref[n]), n))
+    cur, rounds = base_def, []
+    for i in range(4):
+        rd = d / f'normalize_{i + 1}'
+        route_job(case, cur, [net], 'default', rd)
+        old, new = def_nets(cur), def_nets(rd / 'out.def')
+        changed = sorted(x for x in old if x != net and old[x] != new.get(x))
+        rounds.append(dict(net=net, other_nets_changed=len(changed), examples=changed[:10], drc=str(rd / 'drc.rpt')))
+        if not changed:
+            break
+        cur = rd / 'out.def'
+        if i >= 1:
+            net = changed[0]
+    info = dict(mode='auto', probe=probe, patched=cur != base_def, stable=rounds[-1]['other_nets_changed'] == 0,
+                rounds=rounds, drc=rounds[-1]['drc'])
+    (d / 'normalize.json').write_text(json.dumps(info, indent=1))
+    st.info.update(def_repatched=info['patched'], normalize_stable=info['stable'])
+    if info['patched']:
+        print(f'  note: OpenROAD re-patches this DEF ({rounds[0]["other_nets_changed"]} other nets changed when {probe} was '
+              f'rerouted); baseline = patched DEF after {len(rounds) - (1 if info["stable"] else 0)} probe reroute(s)'
+              + ('' if info['stable'] else ', still not stable: expect few valid reroutes'))
+    return cur
+
+
 def s1_import(case, out, st):
     d = st.dir
     extract_job(case, case['def'], d / 'input.spef', d / 'import.log', def_out=d / 'input_rewritten.def')
     base_def = d / 'input_rewritten.def'
     norm = case.get('normalize')
-    if norm:   # deterministic DRT patching of pre-existing defects in the public DEF (see README, "vco_macro")
+    if norm == 'auto':
+        base_def = auto_normalize(case, d, base_def, st)
+    elif norm:   # deterministic DRT patching of pre-existing defects in the public DEF (see README, "vco_macro")
         cur = base_def
         for i in range(norm['times']):
             rd = d / f'normalize_{i + 1}'
             route_job(case, cur, [norm['net']], 'default', rd); cur = rd / 'out.def'
         base_def = cur
+        (d / 'normalize.json').write_text(json.dumps(dict(mode='net', net=norm['net'], drc=str(rd / 'drc.rpt')), indent=1))
     (d / 'base.def').write_bytes(Path(base_def).read_bytes())
     extract_job(case, d / 'base.def', d / 'base.spef', d / 'extract.log')
     export_job(case, d / 'base.def', d / 'geo.json', d / 'export.log')
@@ -166,12 +203,12 @@ def s2_candidates(case, out, st):
     with ThreadPoolExecutor(ARGS.jobs) as ex:
         list(ex.map(lambda n: route_job(case, base_def, [n], 'default', pdirs[n]), nets))
     # pre-existing DRC violations: reported by every router-default reroute (>= 2 nets) or by the last normalize run;
-    # they are only tolerated with --tolerate-baseline-drc (tolerate_baseline_drc in cases.json)
+    # they are tolerated for your own layouts unless --strict (tolerate_baseline_drc in cases.json)
     sets = [set(G.violations(pdirs[n] / 'drc.rpt')) for n in nets]
     pre = set.intersection(*sets) if len(sets) >= 2 else set()
-    norm = case.get('normalize')
-    if norm:
-        pre |= set(G.violations(out / 's1_import' / f'normalize_{norm["times"]}' / 'drc.rpt'))
+    nj = out / 's1_import/normalize.json'
+    if nj.exists():
+        pre |= set(G.violations(json.loads(nj.read_text())['drc']))
     (d / 'baseline_violations.json').write_text(json.dumps(dict(violations=sorted(pre)), indent=1))
     st.info.update(baseline_violations=len(pre), tolerated=bool(case.get('tolerate_baseline_drc')))
     grid = G.gcell_grid(pdirs[nets[0]] / 'route.log')
@@ -445,38 +482,58 @@ def s7_report(case, out, st):
     st.info.update(valid=len(v), improved=summ['improved'])
 
 
+def default_policy():
+    try:
+        import torch, transformers, peft, bitsandbytes  # noqa: F401
+        if torch.cuda.is_available():
+            return 'llm'
+    except Exception:
+        pass
+    print('no CUDA GPU / LLM packages: using --policy heuristic (geometric ranking)')
+    return 'heuristic'
+
+
 def main():
     global ARGS
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('case', help='case name from config/cases.json, or any name for your own layout (with --def)')
-    own = ap.add_argument_group('your own layout (no need to edit config/cases.json)')
-    own.add_argument('--def', dest='def_file', help='routed DEF file')
-    own.add_argument('--lef', help='LEF files, comma-separated, technology LEF first')
-    own.add_argument('--layers', help='signal routing layer range, e.g. met1-met5 (SKY130) or metal2-metal6 (Nangate45)')
-    own.add_argument('--rules', help='OpenRCX rules file (default: bundled SKY130 rules when --layers starts with "met")')
+    ap.add_argument('inputs', nargs='+', metavar='A.def B.lef',
+                    help='your layout: the routed DEF, then its LEF files or folders (technology LEF found automatically); '
+                         'or a case name from config/cases.json')
+    own = ap.add_argument_group('options for your own layout (all optional)')
     own.add_argument('--nets', help='regular expression: only nets whose name matches are rerouted, e.g. "vco|clk"')
+    own.add_argument('--layers', help='signal routing layers, e.g. met1-met5 (default: every LEF routing layer except the lowest)')
+    own.add_argument('--rules', help='OpenRCX rules file (default: bundled SKY130 rules for met* layers)')
     own.add_argument('--pool-nets', type=int, default=20, help='how many highest-coupling nets to try (default 20)')
-    own.add_argument('--normalize', metavar='NET[:TIMES]',
-                     help='reroute NET with the router default TIMES times (default 2) before the baseline; for published DEFs '
-                          'that OpenROAD re-patches on its first run (every reroute then changes other nets)')
-    own.add_argument('--tolerate-baseline-drc', action='store_true',
-                     help='do not count pre-existing DRC violations (reported by every router-default reroute, or by the '
-                          'last --normalize run) as new; they are listed in s2_candidates/baseline_violations.json')
-    ap.add_argument('--policy', default='llm', choices=['llm', 'heuristic', 'random'])
+    own.add_argument('--normalize', default='auto', metavar='auto|off|NET[:TIMES]',
+                     help='published DEFs that OpenROAD re-patches on its first run are detected and patched first (default auto)')
+    own.add_argument('--strict', action='store_true',
+                     help='count pre-existing DRC violations (reported by every router-default reroute) as new')
+    own.add_argument('--def', dest='def_file', help=argparse.SUPPRESS)
+    own.add_argument('--lef', help=argparse.SUPPRESS)
+    ap.add_argument('--policy', default=None, choices=['llm', 'heuristic', 'random'],
+                    help='default: llm when a CUDA GPU and the LLM packages are available, else heuristic')
     ap.add_argument('--adapter', help='LoRA adapter dir (default models/llm_v2/adapter)')
     ap.add_argument('--route', default='best', choices=['best', 'all'], help='best: policy top-1 per net; all: every candidate')
     ap.add_argument('--from', dest='start', choices=STAGES, help='re-run from this stage')
     ap.add_argument('--only', choices=STAGES, help='run a single stage')
-    ap.add_argument('--out', default=None, help='output dir (default out/<case>)')
+    ap.add_argument('--out', default=None, help='output dir (default out/<DEF name or case>)')
     ap.add_argument('--jobs', type=int, default=3); ap.add_argument('--threads', type=int, default=4)
     ap.add_argument('--cases', default=None, help='alternative cases.json')
     ARGS = ap.parse_args()
     try:
-        if ARGS.def_file:
-            case = C.own_case(ARGS.case, ARGS.def_file, ARGS.lef, ARGS.layers, ARGS.rules, ARGS.pool_nets,
-                              ARGS.normalize, ARGS.tolerate_baseline_drc)
+        first = ARGS.inputs[0]
+        if ARGS.def_file or first.lower().endswith('.def'):
+            def_file = ARGS.def_file or first
+            lefs = (ARGS.inputs[1:] if not ARGS.def_file else ARGS.inputs[1:]) + ([ARGS.lef] if ARGS.lef else [])
+            ARGS.case = first if ARGS.def_file else Path(first).stem
+            case = C.own_case(ARGS.case, def_file, lefs, ARGS.layers, ARGS.rules, ARGS.pool_nets, ARGS.normalize, ARGS.strict)
         else:
+            if len(ARGS.inputs) > 1:
+                raise C.StageError(f'"{first}" is not a .def file; give the DEF first: python flow/run.py A.def B.lef')
+            ARGS.case = first
             case = C.load_case(ARGS.case, ARGS.cases)
+        if ARGS.policy is None:
+            ARGS.policy = default_policy()
         if ARGS.nets:
             case['net_regex'] = ARGS.nets
     except C.StageError as e:
