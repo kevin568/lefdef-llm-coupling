@@ -1,0 +1,209 @@
+[
+ {
+  "path": "data/def/adc_clkgen.def",
+  "url": "https://raw.githubusercontent.com/efabless/SKY130_SAR-ADC1/892272208df28b6c7620101e129a9d8dd95ebab7/archive/openlane/adc_clkgen_with_edgedetect_thermocode/runs/kaiserschmarrn/results/final/def/adc_clkgen_with_edgedetect.def",
+  "repo": "efabless/SKY130_SAR-ADC1",
+  "license": "Apache-2.0",
+  "git_blob": "e1b714e1d5a1bf569e8738a7836620773026688d",
+  "sha256": "1e007d3066e2e5896d02220ec1e771471f971b0ce66c48974ffe858ea2a04d1c",
+  "bytes": 886680
+ },
+ {
+  "path": "data/def/audiodac.def",
+  "url": "https://raw.githubusercontent.com/iic-jku/mpw8-submission/e583aba5285dd826c7907bfc0693091fb53731f6/def/audiodac.def",
+  "repo": "iic-jku/mpw8-submission",
+  "license": "Apache-2.0",
+  "git_blob": "a0df72c7d665d0e272fe74fe4363abc58d7e75e0",
+  "sha256": "a5863919a90b9d639b491c910f5d7a80af915da393446d0b37a4a759465ef452",
+  "bytes": 12388394
+ },
+ {
+  "path": "data/def/caravel_clocking.def",
+  "url": "https://raw.githubusercontent.com/efabless/caravel/27cbe49c90ba5362ad52c9968dd98e035c30c74f/def/caravel_clocking.def",
+  "repo": "efabless/caravel",
+  "license": "Apache-2.0",
+  "git_blob": "de858032d90be88159d3fe04b420b45dfa108b89",
+  "sha256": "3709507902fa8e6aa7b6d19fed0caa5ee436c0697c87845936c35648753644f2",
+  "bytes": 444904
+ },
+ {
+  "path": "data/def/config_reg_mux.def",
+  "url": "https://raw.githubusercontent.com/iic-jku/mpw8-submission/e583aba5285dd826c7907bfc0693091fb53731f6/def/config_reg_mux.def",
+  "repo": "iic-jku/mpw8-submission",
+  "license": "Apache-2.0",
+  "git_blob": "73cad24cae797abe62274a71bedbf46aa221c4d5",
+  "sha256": "88883a61826c09a5dacdbb812096dacccaecc61b40cfd033f83bbdf89914b3e2",
+  "bytes": 1283427
+ },
+ {
+  "path": "data/def/const_gen.def",
+  "url": "https://raw.githubusercontent.com/iic-jku/mpw8-submission/e583aba5285dd826c7907bfc0693091fb53731f6/def/const_gen.def",
+  "repo": "iic-jku/mpw8-submission",
+  "license": "Apache-2.0",
+  "git_blob": "fda101552e3501836eb67f90d59d821338ebbcd9",
+  "sha256": "dfb3aa7218867ee3a0db789d3c64a3669a164076429696daebaa52b157a78033",
+  "bytes": 967626
+ },
+ {
+  "path": "data/def/digital_pll.def",
+  "url": "https://raw.githubusercontent.com/efabless/caravel/27cbe49c90ba5362ad52c9968dd98e035c30c74f/def/digital_pll.def",
+  "repo": "efabless/caravel",
+  "license": "Apache-2.0",
+  "git_blob": "9400fe60d0d88e140d4048162bb18d9e4596892b",
+  "sha256": "7501228a9f4c3b7d0b56b29ea3bbb7884a9f4bdbf66ef0f2e39153ff226215d5",
+  "bytes": 388376
+ },
+ {
+  "path": "data/def/gcd_nangate45.def",
+  "url": "https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD/111792153443185f65bd2ff71666556064ba1291/src/rcx/test/45_gcd.def",
+  "repo": "The-OpenROAD-Project/OpenROAD",
+  "license": "BSD-3-Clause",
+  "git_blob": "9f2d7b28ae61a070c4d25ea83aa7e2816d935dc8",
+  "sha256": "b6b39e6d98eb716331f62d74d99c28450d9ef02b2e4f0f0b6b938b4ef959ff3a",
+  "bytes": 337878
+ },
+ {
+  "path": "data/def/housekeeping.def",
+  "url": "https://raw.githubusercontent.com/efabless/caravel/27cbe49c90ba5362ad52c9968dd98e035c30c74f/def/housekeeping.def",
+  "repo": "efabless/caravel",
+  "license": "Apache-2.0",
+  "git_blob": "3692df07be63b696c032faf9c5babe856c26f0fd",
+  "sha256": "e2f6c00deff82d47e3fd8f026bb3c219f5f9e0a03e13a06a78a31a21a1cbfa2e",
+  "bytes": 10807496
+ },
+ {
+  "path": "data/def/mprj_logic_high.def",
+  "url": "https://raw.githubusercontent.com/efabless/caravel/27cbe49c90ba5362ad52c9968dd98e035c30c74f/def/mprj_logic_high.def",
+  "repo": "efabless/caravel",
+  "license": "Apache-2.0",
+  "git_blob": "56bf1b27dcdd9e988c99eb13791b6ac79d1b3b95",
+  "sha256": "cfedfe58a06094ceb829a54cc4570bfe2ba5a46ae62a1218896b3d7ca3db3a8e",
+  "bytes": 269631
+ },
+ {
+  "path": "data/def/spare_logic_block.def",
+  "url": "https://raw.githubusercontent.com/efabless/caravel/27cbe49c90ba5362ad52c9968dd98e035c30c74f/def/spare_logic_block.def",
+  "repo": "efabless/caravel",
+  "license": "Apache-2.0",
+  "git_blob": "66b6ffb0df8b2e0643e245c3f19cc4254b60fe76",
+  "sha256": "5e57472172d2d062996bd88defeaad01232bfe26b322aea8def7fa8a362b8727",
+  "bytes": 57825
+ },
+ {
+  "path": "data/def/tempsense.def",
+  "url": "https://raw.githubusercontent.com/iic-jku/mpw8-submission/e583aba5285dd826c7907bfc0693091fb53731f6/def/tempsense.def",
+  "repo": "iic-jku/mpw8-submission",
+  "license": "Apache-2.0",
+  "git_blob": "6ad59c779c77a3b0c21d8d526a4edad96a89366c",
+  "sha256": "aee878a0dd499fb3b42158e574b7503f5e68a48ac8afe8f40733ea05d22deaaa",
+  "bytes": 369027
+ },
+ {
+  "path": "data/def/vco_adc.def",
+  "url": "https://raw.githubusercontent.com/duyhieubui/caravel_vco_adc/ca8002d24b4a6a6e49af94d72b8a705d0ad3be93/def/vco_adc.def",
+  "repo": "duyhieubui/caravel_vco_adc",
+  "license": "Apache-2.0",
+  "git_blob": "fee0e72b2c7e94a54ba7bb8ebeb64cc9672494fb",
+  "sha256": "3845c2e2c8f1c46eede35574a60e58a157f000fd982bdb4f67d7e374bc3f8423",
+  "bytes": 3051450
+ },
+ {
+  "path": "data/def/vco_macro.def",
+  "url": "https://raw.githubusercontent.com/duyhieubui/caravel_vco_adc/562f87a4a08b453170357c1ec89d75ebc9bc7f54/def/user_project_wrapper.def",
+  "repo": "duyhieubui/caravel_vco_adc",
+  "license": "Apache-2.0",
+  "git_blob": "0b568fc1a30c5961738d2fb865016d45e11034d3",
+  "sha256": "c207445e884136a055e79b14861600f9892a11e240ebc0635a3371db2a542ffe",
+  "bytes": 958813
+ },
+ {
+  "path": "data/lef/Nangate45.lef",
+  "url": "https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD/111792153443185f65bd2ff71666556064ba1291/test/Nangate45/Nangate45.lef",
+  "repo": "The-OpenROAD-Project/OpenROAD",
+  "license": "BSD-3-Clause",
+  "git_blob": "246cdafec005bb469de692be45aee98a9df67114",
+  "sha256": "632ecba3076c1ec1cc86e6b9397730c11113f4036260d64d16d2e2bb21ae5e31",
+  "bytes": 275415
+ },
+ {
+  "path": "data/lef/macro/sram.lef",
+  "url": "https://raw.githubusercontent.com/efabless/sky130_sram_macros/ebfbf5775c8cd433ad38a4d825e46c2275231511/sky130_sram_2kbyte_1rw1r_32x512_8/sky130_sram_2kbyte_1rw1r_32x512_8.lef",
+  "repo": "efabless/sky130_sram_macros",
+  "license": "Apache-2.0",
+  "git_blob": "42ecbfbf1ba44aa6b8490a79ed880cc8581e8842",
+  "sha256": "e35072ac14a991285619477f13c80fd3837e76ef7ed354ae6ab80d9232ce7a2e",
+  "bytes": 26311
+ },
+ {
+  "path": "data/lef/macro/vco.lef",
+  "url": "https://raw.githubusercontent.com/duyhieubui/caravel_vco_adc/562f87a4a08b453170357c1ec89d75ebc9bc7f54/lef/vco.lef",
+  "repo": "duyhieubui/caravel_vco_adc",
+  "license": "Apache-2.0",
+  "git_blob": "ae002a434f2d2ae1e201c7b7be65ca5bd6a9f424",
+  "sha256": "26d71d559d6c5f859ea1c4a273f033d39cf9fd781ee909685c3b75637c683be9",
+  "bytes": 254701
+ },
+ {
+  "path": "data/lef/macro/vco_adc.lef",
+  "url": "https://raw.githubusercontent.com/duyhieubui/caravel_vco_adc/562f87a4a08b453170357c1ec89d75ebc9bc7f54/lef/vco_adc.lef",
+  "repo": "duyhieubui/caravel_vco_adc",
+  "license": "Apache-2.0",
+  "git_blob": "b9d4e8727c3e7b904a0eca3e5c34c7bfa8ef80bf",
+  "sha256": "f93d487d203560fb393b46ee21c5e66c988325fd223628f6b38b5d4a8b5a2445",
+  "bytes": 13220
+ },
+ {
+  "path": "data/lef/macro/vco_adc_wrapper.lef",
+  "url": "https://raw.githubusercontent.com/duyhieubui/caravel_vco_adc/562f87a4a08b453170357c1ec89d75ebc9bc7f54/lef/vco_adc_wrapper.lef",
+  "repo": "duyhieubui/caravel_vco_adc",
+  "license": "Apache-2.0",
+  "git_blob": "4a67d8d30e03604e4e279373938df6b8f0f60a4c",
+  "sha256": "ec65e8d5204442d4a9dec07f1b2f296a50f1fad840f7eaa58f788f247da3fc07",
+  "bytes": 113079
+ },
+ {
+  "path": "data/lef/macro/vco_r100.lef",
+  "url": "https://raw.githubusercontent.com/duyhieubui/caravel_vco_adc/562f87a4a08b453170357c1ec89d75ebc9bc7f54/lef/vco_r100.lef",
+  "repo": "duyhieubui/caravel_vco_adc",
+  "license": "Apache-2.0",
+  "git_blob": "59de1c3f639e5bd73eed474214368a8f41cde71e",
+  "sha256": "4a176972033e3c33f8f84f4b52080e8929e2a6c6db6bce9e4db0f867e40d4ab9",
+  "bytes": 141654
+ },
+ {
+  "path": "data/lef/macro/vco_w6_r100.lef",
+  "url": "https://raw.githubusercontent.com/duyhieubui/caravel_vco_adc/562f87a4a08b453170357c1ec89d75ebc9bc7f54/lef/vco_w6_r100.lef",
+  "repo": "duyhieubui/caravel_vco_adc",
+  "license": "Apache-2.0",
+  "git_blob": "1fa35964528912e9083b7ba7b6b764e82c2b5612",
+  "sha256": "9f0ba81f95441b4338f1f2bcdb37a0c0b15b8f421845caafd92b368c3a71163a",
+  "bytes": 191209
+ },
+ {
+  "path": "data/lef/sky130_merged.nom.lef",
+  "url": "https://raw.githubusercontent.com/efabless/SKY130_SAR-ADC1/892272208df28b6c7620101e129a9d8dd95ebab7/archive/openlane/adc_clkgen_with_edgedetect_thermocode/runs/kaiserschmarrn/tmp/merged.nom.lef",
+  "repo": "efabless/SKY130_SAR-ADC1",
+  "license": "Apache-2.0",
+  "git_blob": "4f651bc2f9a16ffe6e9acf889ea1ecd6edd419ec",
+  "sha256": "0e812ed039a458389ea9d83345cea9baa6746d2d7dda4373ef9c89619493c2fc",
+  "bytes": 1908184
+ },
+ {
+  "path": "data/pdk/45_patterns.rules",
+  "url": "https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD/111792153443185f65bd2ff71666556064ba1291/src/rcx/test/45_patterns.rules",
+  "repo": "The-OpenROAD-Project/OpenROAD",
+  "license": "BSD-3-Clause",
+  "git_blob": "85806baf6b28bf27d8d648648a6da31cdea71a81",
+  "sha256": "2f65fafbe2c704b378563c53a680b93cef080c2799997019d43df7d1e5a563e9",
+  "bytes": 134186
+ },
+ {
+  "path": "data/pdk/sky130hd.rcx_rules",
+  "url": "https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD/111792153443185f65bd2ff71666556064ba1291/test/sky130hd/sky130hd.rcx_rules",
+  "repo": "The-OpenROAD-Project/OpenROAD",
+  "license": "BSD-3-Clause",
+  "git_blob": "af5cfffd6f7d0699510bfba58f352d8feb71fadf",
+  "sha256": "d5bd9b1077ceac9929416abca272a6d52e51cd9a575453a31d129817bb286476",
+  "bytes": 44745
+ }
+]

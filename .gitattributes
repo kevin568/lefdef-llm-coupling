@@ -1,0 +1,7 @@
+* text=auto eol=lf
+data/** -text
+models/** -text
+*.def -text
+*.lef -text
+*.rules -text
+*.safetensors binary

@@ -1,0 +1,10 @@
+# Python driver (flow/run.py). OpenROAD is a separate install (see README).
+numpy>=1.24
+scipy>=1.10
+# LLM scoring (stage s3 with --policy llm, CUDA GPU required)
+torch>=2.1
+transformers>=4.45
+peft>=0.13
+bitsandbytes>=0.43
+accelerate>=0.34
+safetensors>=0.4

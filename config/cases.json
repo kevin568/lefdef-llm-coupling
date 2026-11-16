@@ -1,0 +1,177 @@
+{
+ "vco_macro": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef",
+   "data/lef/macro/vco.lef",
+   "data/lef/macro/vco_r100.lef",
+   "data/lef/macro/vco_w6_r100.lef",
+   "data/lef/macro/vco_adc.lef",
+   "data/lef/macro/vco_adc_wrapper.lef",
+   "data/lef/macro/sram.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/vco_macro.def",
+  "split": "test",
+  "domain": "analog macro interconnect",
+  "pool_nets": 20,
+  "net_filter": "vco_macro_pin",
+  "normalize": {
+   "net": "w2m_data\\[12\\]",
+   "times": 2
+  },
+  "known_violations": [
+   [
+    "Metal Spacing",
+    "net:analog_io[12]",
+    "(1383.9800, 3148.6700) - (1384.0100, 3149.1000) on Layer met2"
+   ]
+  ],
+  "note": "Top-level DEF of caravel_vco_adc @562f87a4. DRT deterministically patches pre-existing macro-pin defects (oversample[4]/[5]) the first time it runs, so the baseline is the DEF after two router-default reroutes of w2m_data[12]; one pre-existing met2 spacing violation at a VCO pin is tolerated in every run."
+ },
+ "tempsense": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/tempsense.def",
+  "split": "test",
+  "domain": "mixed-signal project block",
+  "pool_nets": 20
+ },
+ "digital_pll": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/digital_pll.def",
+  "split": "test",
+  "domain": "mixed-signal project block",
+  "pool_nets": 20
+ },
+ "vco_adc": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/vco_adc.def",
+  "split": "test",
+  "domain": "mixed-signal project block",
+  "pool_nets": 20
+ },
+ "audiodac": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/audiodac.def",
+  "split": "test",
+  "domain": "mixed-signal project block",
+  "pool_nets": 20
+ },
+ "adc_clkgen": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/adc_clkgen.def",
+  "split": "test",
+  "domain": "digital block",
+  "pool_nets": 20
+ },
+ "config_reg_mux": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/config_reg_mux.def",
+  "split": "test",
+  "domain": "digital block",
+  "pool_nets": 20
+ },
+ "caravel_clocking": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/caravel_clocking.def",
+  "split": "train",
+  "domain": "digital block",
+  "pool_nets": 30
+ },
+ "spare_logic_block": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/spare_logic_block.def",
+  "split": "train",
+  "domain": "digital block",
+  "pool_nets": 30
+ },
+ "mprj_logic_high": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/mprj_logic_high.def",
+  "split": "train",
+  "domain": "digital block",
+  "pool_nets": 30
+ },
+ "const_gen": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/const_gen.def",
+  "split": "train",
+  "domain": "digital block",
+  "pool_nets": 30
+ },
+ "housekeeping": {
+  "lefs": [
+   "data/lef/sky130_merged.nom.lef"
+  ],
+  "layers": "met1-met5",
+  "rules": "data/pdk/sky130hd.rcx_rules",
+  "pdk": "sky130hd",
+  "def": "data/def/housekeeping.def",
+  "split": "train",
+  "domain": "digital block",
+  "pool_nets": 15
+ },
+ "gcd_nangate45": {
+  "def": "data/def/gcd_nangate45.def",
+  "lefs": [
+   "data/lef/Nangate45.lef"
+  ],
+  "layers": "metal2-metal6",
+  "rules": "data/pdk/45_patterns.rules",
+  "pdk": "nangate45",
+  "split": "train",
+  "domain": "digital block",
+  "pool_nets": 30
+ }
+}
