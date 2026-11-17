@@ -157,6 +157,10 @@ def _fix_wiring(st, known, dropped_vias):
         m = re.search(r'\+\s*(?!SHAPE\b|MASK\b)[A-Z]|;\s*$', body)
         own, rest = (body[:m.start()], body[m.start():]) if m else (body, '')
         layer = own.split()[0] if own.split() else ''
+        if not re.match(r'^[^\s+();]+$', layer) or re.match(r'^-?\d+$', layer):   # no layer after the keyword: keep
+            out.append(kw + body)
+            first_kw = first_kw or kw
+            continue
         for v in dropped_vias:
             own = re.sub(r'(?<=\s)' + re.escape(v) + r'(?=\s|$)', '', own)
         points = len(re.findall(r'\(', own))
@@ -172,12 +176,60 @@ def _fix_wiring(st, known, dropped_vias):
     return head + ''.join(out)
 
 
-def sanitize(def_path, lefs):
-    """-> (DEF path to use, notes [str], fixed nets [names]); the same path and no notes when nothing is needed"""
+NAMED = ('COMPONENTS', 'VIAS', 'PINS', 'GROUPS', 'NONDEFAULTRULES', 'NETS', 'SPECIALNETS', 'REGIONS', 'SCANCHAINS',
+         'STYLES', 'PINPROPERTIES')   # sections whose statements start '- name'
+SECTIONS = NAMED + ('BLOCKAGES', 'FILLS')
+
+
+def stmt_key(section, st):
+    """identity of a DEF section statement: its name, or (BLOCKAGES / FILLS, unnamed) its text"""
+    return (section, st.split()[1] if section in NAMED else ' '.join(st.split()))
+
+
+def statement_at(def_path, line_no):
+    """what to leave out so OpenROAD gets past an error reported at this DEF line: ('stmt', key) or ('line', text)"""
+    lines = Path(def_path).read_text(errors='replace').splitlines()
+    if not 1 <= line_no <= len(lines):
+        return None
+    i = line_no - 1
+    head = re.compile(r'^\s*(' + '|'.join(SECTIONS) + r')\s+\d+\s*;')
+    for j in range(i, -1, -1):   # the enclosing section, if any
+        if j < i and re.match(r'^\s*END\s+\S+', lines[j]):
+            break
+        h = head.match(lines[j])
+        if not h:
+            continue
+        if j == i:
+            return None
+        k = i   # the statement start: the nearest '- ' line at or above, with no statement end in between
+        while k > j and not lines[k].lstrip().startswith('-'):
+            k -= 1
+            if lines[k].rstrip().endswith(';') and not lines[k].lstrip().startswith('-'):
+                k = j
+                break
+        if k == j:
+            break
+        end = k
+        while end < len(lines) - 1 and not lines[end].rstrip().endswith(';'):
+            end += 1
+        return ('stmt', stmt_key(h.group(1), ' '.join(lines[k:end + 1])))
+    return ('line', lines[i].strip()) if lines[i].strip() else None
+
+
+def sanitize(def_path, lefs, drop=None):
+    """-> (DEF path to use, notes [str], fixed nets [names]); the same path and no notes when nothing is needed.
+    drop: statement keys / line texts to leave out (what OpenROAD still could not read, see statement_at)."""
     macros, known, rules, lef_vias = lef_info(lefs)
     text = Path(def_path).read_text(errors='replace')
     notes, fixed = [], set()
     removed, dropped_vias, fixed_vias, bad_layers, undefined_vias = set(), set(), [], set(), set()
+    drop = drop or set()
+    left_out, dups = [], []
+    drop_lines = {x[1] for x in drop if x[0] == 'line'}
+    drop_names = {x[1] for x in drop if x[0] == 'name'}
+    if drop_lines:
+        text = ''.join(l for l in text.splitlines(True) if l.strip() not in drop_lines)
+        left_out += sorted(drop_lines)
 
     def rewrite(name, fn):
         nonlocal text
@@ -187,7 +239,33 @@ def sanitize(def_path, lefs):
         m, body = s
         parts = re.split(r'(;[ \t]*\r?\n)', body)
         stmts = [parts[k] + (parts[k + 1] if k + 1 < len(parts) else '') for k in range(0, len(parts), 2)]
-        kept = [x for x in (fn(st) for st in stmts) if x is not None]
+        seen = set()
+
+        def gate(st):   # leave out statements OpenROAD could not read, and repeated definitions of a name (first kept)
+            if st.strip().startswith('-') and len(st.split()) > 1:
+                for bad in drop_names:   # a name an error reported: drop the '+ KEYWORD name' item, else the statement
+                    if bad in st.split() or (bad + ';') in st.split():
+                        st2 = re.sub(r'\+\s*[A-Z]+\s+' + re.escape(bad) + r'(?=[\s;])', '', st)
+                        if st2 != st and bad not in st2.replace(';', ' ').split():
+                            left_out.append(f'{name} {st.split()[1][:40]}: + ... {bad}')
+                            st = st2
+                        else:
+                            left_out.append(f'{name} {st.split()[1][:60]}')
+                            if name == 'VIAS':
+                                dropped_vias.add(st.split()[1])
+                            return None
+                key = stmt_key(name, st)
+                if ('stmt', key) in drop:
+                    left_out.append(f'{name} {key[1][:60]}')
+                    if name == 'VIAS':
+                        dropped_vias.add(key[1])
+                    return None
+                if name in NAMED and key in seen:
+                    dups.append(f'{name} {key[1][:60]}')
+                    return None
+                seen.add(key)
+            return fn(st)
+        kept = [x for x in (gate(st) for st in stmts) if x is not None]
         count = sum(1 for x in kept if x.strip().startswith('-'))
         text = text[:m.start()] + m.group(1) + str(count) + m.group(3) + ''.join(kept) + text[m.end() + len(body):]
 
@@ -222,7 +300,8 @@ def sanitize(def_path, lefs):
                     return ''
                 return mm.group(0)
             head = re.sub(r'\(\s*(\S+)\s+\S+\s*\)', drop, head)
-            bad = [l for l in re.findall(r'(?:ROUTED|FIXED|COVER|NOSHIELD|NEW)\s+(\S+)', tail) if l not in known]
+            bad = [l for l in re.findall(r'\b(?:ROUTED|FIXED|COVER|NOSHIELD|NEW)\s+([^\s+();]+)', tail)
+                   if l not in known and not re.match(r'^-?\d+$', l)]
             undef = {v for v in _via_tokens(tail) if v not in known_vias}
             if not bad and not undef:
                 return head + tail   # untouched
@@ -285,6 +364,8 @@ def sanitize(def_path, lefs):
     rewrite('FILLS', layer_stmt)
     rewrite('GROUPS', group)
     rewrite('NONDEFAULTRULES', ndr)
+    for sec in ('REGIONS', 'SCANCHAINS', 'STYLES', 'PINPROPERTIES'):
+        rewrite(sec, lambda st: st)
 
     def tracks(m):   # TRACKS ... LAYER a b ; with layers the LEF does not define
         layers = m.group(2).split()
@@ -316,6 +397,10 @@ def sanitize(def_path, lefs):
                      f'(e.g. {", ".join(sorted(set(other_fixes))[:4])})')
     if bad_layers:
         notes.append(f'wiring on layer(s) the LEF does not define ({", ".join(sorted(bad_layers)[:4])}) is left out')
+    if dups:
+        notes.append(f'{len(dups)} repeated definition(s) of a name are left out, the first kept (e.g. {dups[0]})')
+    if left_out:
+        notes.append(f'{len(left_out)} item(s) OpenROAD could not read are left out (e.g. {"; ".join(left_out[:3])})')
     if not notes:
         return str(def_path), [], []
     out = Path(os.environ.get('LEFDEF_CACHE') or REPO / 'out' / '.cache') / _sha(def_path)[:16] / (Path(def_path).stem + '.for_lef.def')

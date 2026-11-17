@@ -224,16 +224,34 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         raise StageError(f'missing input file {Path(def_file).expanduser().resolve()}')
     c['def'] = str(plain_file(Path(def_file).expanduser().resolve()))
     # DEF parts the LEFs do not define (cells, via rules, layers): a DEF copy without them, so the flow keeps running
-    c['def'], notes, fixed = sanitize_def(c['def'], lef_paths)
+    # then OpenROAD reads the copy; each item it still reports (DEF line number) is left out and the copy rewritten
+    from .defcells import statement_at
+    src, drop = c['def'], set()
+    for _ in range(60):
+        c['def'], notes, fixed = sanitize_def(src, lef_paths, drop)
+        errs = preflight.check_def(lef_paths, c['def'])
+        if not errs:
+            break
+        where = [statement_at(c['def'], int(m.group(1))) for l in errs for m in [re.search(r'\bat line (\d+)', l)] if m]
+        if not where:   # no line number: leave out what the error names, e.g. "undefined NONDEFAULTRULE (X)"
+            where = [('name', n) for l in errs if 'DEF parser returns' not in l
+                     for n in re.findall(r'\(([^()\s]+)\)', l)]
+        new = [w for w in where if w and w not in drop]
+        if not new:
+            for n in notes:
+                print(f'  note: {n}')
+            sep = chr(10) + '    '
+            raise StageError(f'OpenROAD cannot read the DEF even after the repairs above. All {len(errs)} error line(s):'
+                             + sep + sep.join(errs[:60]))
+        drop |= set(new)
+    else:
+        sep = chr(10) + '    '
+        raise StageError(f'OpenROAD still cannot read the DEF after leaving out {len(drop)} item(s); last errors:'
+                         + sep + sep.join(errs[:60]))
     if fixed:
         c['fixed_nets'] = fixed
     for n in notes:
         print(f'  note: {n}')
-    errs = preflight.check_def(lef_paths, c['def'])
-    if errs:
-        sep = chr(10) + '    '
-        raise StageError(f'OpenROAD cannot read the DEF even after the repairs above. All {len(errs)} error line(s):'
-                         + sep + sep.join(errs[:60]))
     if normalize == 'auto':
         c['normalize'] = 'auto'
     elif normalize and normalize != 'off':
