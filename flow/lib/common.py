@@ -251,6 +251,16 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         print(f'  note: MIM capacitor layer(s) {", ".join(v["mim"])}: the router accepts "{v["desc"]}" on this design '
               f'(used; no signal routing on them)' + (f'. Rejected: {rej}' if rej else ''))
     print(best['out'], end='')
+    if rerrs:   # keep running: the least destructive reduced copy the router accepts (lib/reduce.py)
+        from . import reduce as Rd
+        lf, df, applied, left = Rd.repair(c, rerrs)
+        if not left:
+            gone = set(Rd.nets_touching(c['def'], None, other_def=df))   # nets that lost cells: kept, not rerouted
+            if gone:
+                c['fixed_nets'] = sorted(set(c.get('fixed_nets', [])) | gone)
+            print(f'  note: the router stops on the full design ({rerrs[0][:100]}) but accepts it without: '
+                  + '; '.join(applied) + ': the flow continues with that copy')
+            c['lefs'], c['def'], rerrs = lf, df, []
     if rerrs:
         u = list(dict.fromkeys(re.sub(r'(?<![-\w.])\d+(\.\d+)?\b', '#', e) for e in rerrs))
         sep = chr(10) + '      '

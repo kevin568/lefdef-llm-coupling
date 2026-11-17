@@ -294,16 +294,53 @@ def c_route(case, d, n_nets, geo):
             det.append(f'OK   {n} ({len(geo["nets"][n]["pins"])} pins) {time.time() - t0:.0f}s, DRC markers {drc}'); ok += 1
         except Exception:   # noqa: BLE001
             det.append(f'FAIL {n} ({len(geo["nets"][n]["pins"])} pins) {time.time() - t0:.0f}s, log {log}')
-    errs = []
+    errs, ctx = [], []
     for lg in logs:
         if lg.exists():
-            errs += [l for l in lg.read_text(errors='replace').splitlines()
-                     if re.search(r'\[ERROR|^ERROR|^Error', l.strip()) and 'GRT-0253' not in l]
+            lines = lg.read_text(errors='replace').splitlines()
+            errs += [l for l in lines if re.search(r'\[ERROR|^ERROR|^Error', l.strip()) and 'GRT-0253' not in l]
+            if not ctx:
+                ctx = context(lines)
     if errs:
         det += ['--- router error lines ---'] + distinct(errs)
+    if ctx and ok < len(picks):
+        det += ['--- what the router was doing just before the error (first failing log) ---'] + ctx
     return dict(status='OK' if ok == len(picks) else 'FAIL' if ok == 0 else 'WARN', details=det,
-                key=det[:len(picks)] + distinct(errs, 8),
+                key=det[:len(picks)] + distinct(errs, 8) + (['context before the error:'] + ctx if ctx and ok < len(picks) else []),
                 summary=f'{ok}/{len(picks)} reroutes succeeded' + (f'; first error: {errs[0].strip()[:160]}' if errs and ok < len(picks) else ''))
+
+
+def context(lines, n=8):
+    """the last informative log lines before the first error line"""
+    for i, l in enumerate(lines):
+        if re.search(r'\[ERROR|^ERROR|^Error|terminate called|std::', l.strip()):
+            before = [x.strip() for x in lines[max(0, i - 40):i] if x.strip() and not x.strip().startswith('[WARNING ODB')]
+            return [x[:200] for x in before[-n:]] + [l.strip()[:200]]
+    return []
+
+
+@check('11 bisection: which part of the design the router cannot handle')
+def c_bisect(case):
+    from lib import reduce as Rd
+    base = [e for e in P.router_probe(case['lefs'], case['def'], case['layers'], case.get('skip_tracks', []))
+            if not e.startswith('(no error line')]
+    if not base:
+        return dict(summary='router probe on the full design passes: nothing to bisect')
+    res = Rd.bisect(case, include_diagnostic=True, base_errs=base)
+    det = [f'full design: {base[0][:150]}']
+    fixes = []
+    for k, d, errs, _, _ in res:
+        det.append(f'{"OK  " if not errs else "FAIL"} without {d}' + (f'  -> {errs[0][:110]}' if errs else ''))
+        if not errs:
+            fixes.append(d)
+    summ = (f'error disappears without: {"; ".join(fixes)}' if fixes else
+            'error stays with every single reduction (combined cause or technology-level)')
+    if not fixes:   # several causes at once: cumulative reductions (what the flow itself does to keep running)
+        _, _, applied, left = Rd.repair(case, base)
+        det.append('cumulative: ' + ('router accepts the design without: ' + '; '.join(applied) if not left else
+                                     f'still fails after {"; ".join(applied) or "nothing"}: {left[0][:120]}'))
+        summ += ' | ' + det[-1]
+    return dict(status='WARN', summary=summ, details=det, key=det)
 
 
 # ------------------------------------------------------------------------------------------------ report
@@ -348,7 +385,9 @@ def main():
         c_roundtrip(case, d)
         _, ex = c_export(case, d)
         if ex:
-            c_route(case, d, a.nets, ex['geo'])
+            rr, _ = c_route(case, d, a.nets, ex['geo'])
+            if rr['status'] != 'OK':
+                c_bisect(case)
     else:
         CHECKS.append(dict(name='8-10 round trip / export / reroute', status='FAIL', seconds=0.,
                            summary='skipped: the flow setup (check 7) failed', details=[]))
