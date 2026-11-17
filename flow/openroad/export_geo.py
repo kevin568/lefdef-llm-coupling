@@ -13,12 +13,31 @@ odb.read_def(db.getTech(), deff)
 block = db.getChip().getBlock(); tech = db.getTech()
 layers = {l.getName(): dict(level=l.getRoutingLevel(), pitch=l.getPitch(), width=l.getWidth(), direction=str(l.getDirection()))
           for l in tech.getLayers() if l.getRoutingLevel()}
+fallback = None
+if not hasattr(odb, 'dbWirePathItr'):   # older OpenROAD builds: read the wire shapes from the DEF text instead
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+    import defwires
+
+    def width_of(name):
+        l = tech.findLayer(name)
+        return l.getWidth() if l and l.getRoutingLevel() else 0
+
+    def via_layers(name):
+        v = block.findVia(name) or tech.findVia(name)
+        if not v:
+            return set()
+        return {b.getTechLayer().getName() for b in v.getBoxes() if b.getTechLayer() and b.getTechLayer().getRoutingLevel()}
+    fallback = defwires.net_wires(deff, width_of, via_layers)
+    fallback.update({k.replace('\\', ''): v for k, v in list(fallback.items())})
 nets = {}
 for n in block.getNets():
     if n.getSigType() in ('POWER', 'GROUND'):
         continue
     wire = n.getWire(); shapes = []; vias = 0
-    if wire:
+    if wire and fallback is not None:
+        fs, vias = fallback.get(n.getName(), fallback.get(n.getName().replace('\\', ''), ([], 0)))
+        shapes = [dict(layer=l, rect=list(r)) for l, r in fs]
+    elif wire:
         it = odb.dbWirePathItr(); it.begin(wire)
         path = odb.dbWirePath(); ps = odb.dbWirePathShape()
         while it.getNextPath(path):

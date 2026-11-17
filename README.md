@@ -105,8 +105,14 @@ Measured on a 20-core machine with an RTX 5070 and `--jobs 4`: `tempsense` takes
 With `--route all` all 192 trees are valid and 112 of them improve U.
 
 ### Requirements
-- Linux (or WSL2). OpenROAD with Python (`odb`) support. Tested with OpenROAD `26Q2-1164-g08f67ee5ec`.
-  Stage `s0_check` verifies the commands the flow needs.
+- Linux (or WSL2). OpenROAD with Python (`odb`) support. Tested with OpenROAD `26Q2-1164-g08f67ee5ec` and with the
+  conda build `2.0-12381` (Feb 2024). Stage `s0_check` verifies the commands the flow needs.
+- **No OpenROAD, no root, older Linux** (e.g. RHEL/Rocky 8, glibc 2.28, no Docker): `bash tools/install_openroad_conda.sh`
+  puts OpenROAD and the flow's Python into `~/lefdef-tools` (about 1.6 GB, downloads only, conda-forge + litex-hub,
+  no Anaconda "defaults" channel), then `source ~/lefdef-tools/env.sh` and run with `--policy heuristic`. Every library
+  it loads is inside that folder (needs glibc 2.17 or newer); checked end to end on `tempsense` (40/40 valid reroutes,
+  same baseline as OpenROAD 26Q2). With that older OpenROAD, the geometry export reads wires from the DEF
+  (`flow/lib/defwires.py`, identical shapes to OpenDB's on 6 checked layouts).
 - LLM policy: a CUDA GPU with at least 8 GB. The base model `unsloth/Qwen2.5-3B-Instruct-bnb-4bit` (about 2 GB)
   is downloaded from Hugging Face on first use. Read `NOTICE.md` for its license.
 
