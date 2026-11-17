@@ -221,6 +221,10 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     for n in pnotes:
         print(f'  note: {n}')
     rl = lef_routing_layers(lef_paths)
+    from .lefpins import add_pin_access   # signal pins only on poly / diffusion: a routing-layer shape over them
+    lef_paths, anotes = add_pin_access(lef_paths, rl)
+    for n in anotes:
+        print(f'  note: {n}')
     if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
         sig = [l for l in rl[1:] if not l.lower().startswith('top')]   # IHP TopMetal1/2: thick power metals
         nop = lef_pitchless_layers(lef_paths)
