@@ -3,7 +3,8 @@
 # Ubuntu packages do not run (e.g. RHEL/Rocky 8 with glibc 2.28) and no Docker/Apptainer is available.
 #
 #   bash tools/install_openroad_conda.sh [FOLDER]   # default FOLDER: local-tools/ inside this repository folder
-#   source local-tools/env.sh                       # each new terminal; then: python flow/run.py A.def B.lef --policy heuristic
+#   source local-tools/env.csh   (csh/tcsh; bash: source local-tools/env.sh)   # each new terminal
+#   python3 flow/run.py A.def B.lef --policy heuristic
 #
 # Nothing is written outside FOLDER (conda's cache, temporary files, config and home-directory files are redirected
 # into it). About 3 GB while installing, 1.9 GB after. local-tools/ is in .gitignore. Running again resumes.
@@ -48,9 +49,14 @@ install_lock() {   # $1 environment folder, $2 lock file: curl downloads the pac
 }
 
 say "OpenROAD 2.0-12381 and its libraries -> $OR_ENV"
-install_lock "$OR_ENV" "$REPO/tools/lock/env-openroad.txt"
+if "$OR_ENV/bin/openroad" -version > /dev/null 2>&1; then
+  echo "  already installed"
+else
+  install_lock "$OR_ENV" "$REPO/tools/lock/env-openroad.txt"
+fi
 
 say "older library versions this OpenROAD build links (fmt 8, ICU 64, libjpeg 9)"
+[ -e "$OR_ENV/lib/libfmt.so.8" ] && [ -e "$OR_ENV/lib/libicuuc.so.64" ] && [ -e "$OR_ENV/lib/libjpeg.so.9" ] ||
 for u in https://conda.anaconda.org/conda-forge/linux-64/fmt-8.1.1-h4bd325d_0.tar.bz2 \
          https://conda.anaconda.org/conda-forge/linux-64/icu-64.2-he1b5a44_1.tar.bz2 \
          https://conda.anaconda.org/conda-forge/linux-64/jpeg-9e-h7f98852_0.tar.bz2; do
@@ -61,12 +67,22 @@ done
 [ -e "$OR_ENV/lib/libgomp.so.1" ] || ln -s "$(ls "$OR_ENV"/lib/libgomp.so.1.* | head -1)" "$OR_ENV/lib/libgomp.so.1"
 
 say "Python 3.11 for the flow (numpy, scipy) -> $PY_ENV"
-install_lock "$PY_ENV" "$REPO/tools/lock/env-python.txt"
+if "$PY_ENV/bin/python3" -c "import numpy, scipy" > /dev/null 2>&1; then
+  echo "  already installed"
+else
+  install_lock "$PY_ENV" "$REPO/tools/lock/env-python.txt"
+fi
 
 cat > "$PREFIX/env.sh" <<EOF
 # source me: OpenROAD and the flow's Python
 export OPENROAD="$OR_ENV/bin/openroad"
 export PATH="$PY_ENV/bin:\$PATH"
+EOF
+cat > "$PREFIX/env.csh" <<EOF
+# source me from csh/tcsh: OpenROAD and the flow's Python
+setenv OPENROAD "$OR_ENV/bin/openroad"
+setenv PATH "$PY_ENV/bin:\${PATH}"
+rehash
 EOF
 
 cnd clean -afy -q > /dev/null; rm -rf "$PKG" "$TMPDIR"   # downloaded packages are no longer needed
@@ -75,8 +91,11 @@ say "check"
 missing=$(env -i PATH=/usr/bin:/bin ldd "$OR_ENV/bin/openroad" | grep "not found" || true)
 [ -z "$missing" ] || { echo "missing libraries:"; echo "$missing"; exit 1; }
 "$OR_ENV/bin/openroad" -version
-"$PY_ENV/bin/python" -c "import numpy, scipy, sys; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'scipy', scipy.__version__)"
+"$PY_ENV/bin/python3" -c "import numpy, scipy, sys; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'scipy', scipy.__version__)"
 du -sh "$PREFIX" | sed 's/^/size: /'
 echo
-echo "done. Each new terminal:  source $PREFIX/env.sh"
-echo "      then, in $REPO:  python flow/run.py A.def B.lef --policy heuristic"
+echo "done. In each new terminal, load the tools first (your shell: echo \$0):"
+echo "  csh / tcsh:   source $PREFIX/env.csh"
+echo "  bash / zsh:   source $PREFIX/env.sh"
+echo "then, in $REPO:"
+echo "  python3 flow/run.py A.def B.lef --policy heuristic"

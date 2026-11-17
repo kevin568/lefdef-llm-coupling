@@ -111,7 +111,7 @@ With `--route all` all 192 trees are valid and 112 of them improve U.
   puts OpenROAD and the flow's Python into `local-tools/` inside this folder (about 1.9 GB, 3 GB while installing;
   downloads only, conda-forge + litex-hub, no Anaconda "defaults" channel). Nothing is written outside this folder:
   conda's cache, temporary files and home-directory files are redirected into `local-tools/`, which `.gitignore`
-  keeps out of `git pull`. Then `source local-tools/env.sh` (each new terminal) and run with `--policy heuristic`.
+  keeps out of `git pull`. Then, in each new terminal, `source local-tools/env.csh` (csh/tcsh; bash: `env.sh`; check with `echo $0`) and run `python3 flow/run.py A.def B.lef --policy heuristic` (`python3`: `python` may be Python 2 or an alias). Running the script again skips what is installed.
   Package versions are pinned in `tools/lock/` (the tested set); curl downloads them (the same way git connects) and
   conda installs from the local files offline, so conda's own HTTPS checks (`CondaSSLError` behind company HTTPS
   inspection) are not involved. Every library
