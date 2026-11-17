@@ -159,12 +159,14 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         layers = f'{sig[0]}-{sig[-1]}'
         print(f'--layers not given: using {layers} (routing layers in LEF: {", ".join(rl)})')
     if not rules:
-        if not rl or not set(rl) <= SKY130_LAYERS:
-            raise StageError(f'--rules (OpenRCX rules file) is required: only SKY130 rules are bundled, and the LEF '
-                             f'routing layers are {", ".join(rl)}')
-        rules = str(REPO / 'data/pdk/sky130hd.rcx_rules')
-    c = dict(name=name, lefs=lef_paths,
-             layers=layers, rules=str(Path(rules).expanduser().resolve()), pool_nets=pool_nets, split='user', domain='user')
+        if rl and set(rl) <= SKY130_LAYERS:
+            rules = str(REPO / 'data/pdk/sky130hd.rcx_rules')
+        else:   # no OpenRCX rules for this technology: measure coupling with the geometric proxy (um of parallel run)
+            rules = 'proxy'
+            print('--rules not given and no bundled OpenRCX rules for these layers: coupling is measured with the '
+                  'geometric proxy (um of same-layer parallel run within 2 pitches; give --rules FILE for fF)')
+    c = dict(name=name, lefs=lef_paths, layers=layers, rules=rules if rules == 'proxy' else str(Path(rules).expanduser().resolve()),
+             pool_nets=pool_nets, split='user', domain='user')
     if not Path(def_file).expanduser().exists():
         raise StageError(f'missing input file {Path(def_file).expanduser().resolve()}')
     c['def'] = str(plain_file(Path(def_file).expanduser().resolve()))
@@ -177,7 +179,7 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         c['normalize'] = dict(net=def_net_name(c['def'], net), times=int(times))
     if not strict:
         c['tolerate_baseline_drc'] = True
-    for p in [c['def'], c['rules'], *c['lefs']]:
+    for p in [c['def'], *([] if c['rules'] == 'proxy' else [c['rules']]), *c['lefs']]:
         if not Path(p).exists():
             raise StageError(f'missing input file {p}')
     return c

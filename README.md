@@ -43,7 +43,13 @@ What is decided for you (each can be overridden):
 - **Routing layers** (`--layers`): every LEF routing layer except the lowest, and without IHP's `TopMetal*` power
   layers (SKY130: `met1-met5`; IHP: `Metal2-Metal5`).
 - **Extraction rules** (`--rules`): the bundled SKY130 file when the LEF layers are SKY130's (`li1`, `met1`-`met5`).
-  Any other technology stops and asks for its OpenRCX rules file.
+  Any other technology without `--rules FILE` uses the **geometric coupling proxy** (`--rules proxy`): coupling is
+  the length (um) a net runs parallel to another net on the same layer within 2 routing pitches, written as a SPEF so
+  every stage is unchanged; reroutes, DRC and the other-net checks are real OpenROAD runs, and reports say `um (proxy)`.
+  Checked against OpenRCX afterwards (base.def vs final.def extracted with the real rules): Nangate45 gcd, proxy
+  -61.6% on 14 rerouted nets, OpenRCX -49.3% (12 of 14 nets lower, design -12.7%); tempsense, proxy -30.3% on 9 nets,
+  OpenRCX -41.1% (3 of 9 nets lower, design -8.9%). For fF on your technology, extract the input DEF and
+  `s6_apply/final.def` with your extractor (StarRC, Calibre, Quantus) or pass `--rules FILE`.
 - **Policy** (`--policy`): the LLM when a CUDA GPU and its packages are present, otherwise the geometric heuristic.
 - **Published DEFs that OpenROAD re-patches** (`--normalize auto`): on some older layouts the first OpenROAD detailed
   route also fixes pre-existing defects, so every reroute would change other nets and be marked invalid. Stage

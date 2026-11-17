@@ -21,9 +21,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import common as C                     # noqa: E402
-from lib import spef, guides as G, candidates as K, features as F, proxy  # noqa: E402
+from lib import spef, guides as G, candidates as K, features as F, proxy, proxyspef  # noqa: E402
 
 STAGES = ['s0_check', 's1_import', 's2_candidates', 's3_score', 's4_route', 's5_extract', 's6_apply', 's7_report']
+
+
+CU = 'fF'   # coupling unit shown in reports: 'um (proxy)' when no OpenRCX rules file is used
 
 
 def pct(x):
@@ -67,8 +70,15 @@ def try_route(case, state_def, net, rundir):
 
 
 def extract_job(case, def_in, spef_out, log, def_out=''):
-    return C.run_openroad(C.OR_DIR / 'extract.tcl', dict(LEFS=' '.join(case['lefs']), DEF_IN=def_in, RULES=case['rules'],
-                          SPEF_OUT=spef_out, DEF_OUT=def_out), log, threads=ARGS.threads)
+    """OpenRCX extraction into spef_out; with rules 'proxy' (no rules file) the geometric coupling proxy is written
+    as the SPEF instead (lib/proxyspef.py), so the later stages work unchanged."""
+    sec = C.run_openroad(C.OR_DIR / 'extract.tcl', dict(LEFS=' '.join(case['lefs']), DEF_IN=def_in, RULES=case['rules'],
+                         SPEF_OUT=spef_out, DEF_OUT=def_out), log, threads=ARGS.threads)
+    if case['rules'] == 'proxy':
+        g = Path(str(spef_out) + '.geo.json')
+        export_job(case, def_in, g, Path(str(log) + '.geo.log'))
+        proxyspef.write_spef(json.loads(g.read_text()), spef_out)
+    return sec
 
 
 def export_job(case, def_in, out_json, log):
@@ -111,7 +121,7 @@ def s0_check(case, out, st):
     st.info['openroad_version'] = [l for l in txt.splitlines() if l.strip() and 'FLOW_DONE' not in l][-1]
     # bundled inputs must be byte-identical to data/SOURCES.json (catches CRLF conversion or truncated downloads)
     src = {(C.REPO / s['path']).resolve(): s['sha256'] for s in json.loads((C.REPO / 'data/SOURCES.json').read_text())}
-    for p in [case['def'], case['rules'], *case['lefs']]:
+    for p in [case['def'], *([] if case['rules'] == 'proxy' else [case['rules']]), *case['lefs']]:
         want = src.get(Path(p).resolve())
         if want and C.sha256(p) != want:
             raise C.StageError(f'input file differs from data/SOURCES.json: {p}\n  (line-ending conversion on checkout? see README "Debugging")')
@@ -476,8 +486,13 @@ def s7_report(case, out, st):
     pol = 'llm' if ARGS.policy == 'llm' else ARGS.policy
     trees = [r for r in rows if r['kind'] != 'default']; dflt = {r['net']: r for r in rows if r['kind'] == 'default'}
     lines = [f'# Coupling report: {case["name"]}', '',
-             f'Baseline: total coupling {base["cc_fF"]:.3f} fF, wire length {base["wl_um"]:.1f} um, vias {base["vias"]}, '
+             f'Baseline: total coupling {base["cc_fF"]:.3f} {CU}, wire length {base["wl_um"]:.1f} um, vias {base["vias"]}, '
              f'{base["instances"]} instances, {base["signal_nets"]} signal nets.', '']
+    if CU != 'fF':
+        lines += ['Coupling is the geometric proxy (no OpenRCX rules file for this technology): um that a net runs '
+                  'parallel to another net on the same layer within 2 routing pitches. Reroutes, DRC and the other-net '
+                  'checks are real (OpenROAD); for fF, extract the input DEF and s6_apply/final.def with your extractor '
+                  'or pass --rules FILE.', '']
     A = load_apply(case, out)
     if A:
         f = A['final']; K = A['key_metrics']; r, t = K['rerouted_nets'], K['target_nets']
@@ -485,10 +500,10 @@ def s7_report(case, out, st):
         med = f'{r["median_net_change_pct"]:+.1f}%' if r['median_net_change_pct'] is not None else '—'
         lines += ['## Before / after (s6_apply: accepted reroutes combined in one layout)', '',
                   '| key metric | before | after | change |', '|---|---:|---:|---:|',
-                  f'| **coupling of the {r["n"]} rerouted nets (fF)** | {r["cc_before_fF"]:.3f} | {r["cc_after_fF"]:.3f} | **{r["change_pct"]:+.2f}%** |',
-                  f'| coupling of the {t["n"]} target nets ({t["selection"]}) (fF) | {t["cc_before_fF"]:.3f} | {t["cc_after_fF"]:.3f} | {t["change_pct"]:+.2f}% |',
-                  f'| worst target net (fF) | {wb[1]:.3f} `{wb[0]}` | {wa[1]:.3f} `{wa[0]}` | {100. * (wa[1] - wb[1]) / wb[1] if wb[1] else 0.:+.2f}% |',
-                  f'| design total coupling (fF) | {base["cc_fF"]:.3f} | {f["cc_fF"]:.3f} | {A["cc_change_pct"]:+.2f}% |',
+                  f'| **coupling of the {r["n"]} rerouted nets ({CU})** | {r["cc_before_fF"]:.3f} | {r["cc_after_fF"]:.3f} | **{r["change_pct"]:+.2f}%** |',
+                  f'| coupling of the {t["n"]} target nets ({t["selection"]}) ({CU}) | {t["cc_before_fF"]:.3f} | {t["cc_after_fF"]:.3f} | {t["change_pct"]:+.2f}% |',
+                  f'| worst target net ({CU}) | {wb[1]:.3f} `{wb[0]}` | {wa[1]:.3f} `{wa[0]}` | {100. * (wa[1] - wb[1]) / wb[1] if wb[1] else 0.:+.2f}% |',
+                  f'| design total coupling ({CU}) | {base["cc_fF"]:.3f} | {f["cc_fF"]:.3f} | {A["cc_change_pct"]:+.2f}% |',
                   f'| wire length (um) | {base["wl_um"]:.1f} | {f["wl_um"]:.1f} | {A["wl_change_pct"]:+.2f}% |',
                   f'| vias | {base["vias"]} | {f["vias"]} | {A["via_change"]:+d} |', '',
                   f'Rerouted nets: median per-net change {med}, {r["nets_freed"]} of {r["n"]} nets lose ≥99% of their coupling. '
@@ -496,15 +511,16 @@ def s7_report(case, out, st):
                   f'U = {A["U"]:+.4f}. {A["accepted"]} of {A["tried"]} candidate reroutes accepted. Final layout: `{A["final_def"]}` '
                   f'(SPEF `{A["final_spef"]}`).', '']
         if A['nets']:
-            lines += ['| rerouted net | coupling before → after (fF) | change |', '|---|---|---:|']
+            lines += [f'| rerouted net | coupling before → after ({CU}) | change |', '|---|---|---:|']
             lines += [f'| {x["net"]} | {x["cc_before_fF"]:.2f} → {x["cc_after_fF"]:.2f} | {pct(x)} |' for x in A['nets']]
             lines += ['']
         sk = [s for s in A['steps'] if not s['accepted']]
         if sk:
             lines += ['Skipped while combining: ' + '; '.join(f'{s["net"]} ({s["reason"]}, `{s["dir"]}`)' for s in sk), '']
     lines += ['## Single-net reroutes (each measured alone against the baseline)', '',
-              f'Policy `{ARGS.policy}`, route mode `{ARGS.route}`. One net rerouted per row (OpenROAD ECO), measured by OpenRCX.', '',
-             '| net | candidate | valid | net CC before → after (fF) | design ΔCC (fF) | U | router default: net CC after / U |',
+              f'Policy `{ARGS.policy}`, route mode `{ARGS.route}`. One net rerouted per row (OpenROAD ECO), measured by '
+              f'{"OpenRCX" if CU == "fF" else "the geometric coupling proxy"}.', '',
+             f'| net | candidate | valid | net CC before → after ({CU}) | design ΔCC ({CU}) | U | router default: net CC after / U |',
              '|---|---|---|---|---:|---:|---|']
     shown = trees if ARGS.route != 'all' else sorted(trees, key=lambda r: -S[r['candidate_id']].get(pol, 0))
     for r in shown:
@@ -519,7 +535,7 @@ def s7_report(case, out, st):
                 improved=sum(r['U'] > 0 for r in v), mean_U=mean(r['U'] for r in v) if v else None,
                 net_cc_before_fF=sum(r['net_cc_before_fF'] for r in v), net_cc_after_fF=sum(r['net_cc_after_fF'] for r in v))
     lines += ['', f'Valid {len(v)}/{len(trees)}, improved {summ["improved"]}, '
-                  f'rerouted nets coupling {summ["net_cc_before_fF"]:.2f} → {summ["net_cc_after_fF"]:.2f} fF.']
+                  f'rerouted nets coupling {summ["net_cc_before_fF"]:.2f} → {summ["net_cc_after_fF"]:.2f} {CU}.']
     if ARGS.route == 'all' and len(v) >= 3:   # ranking quality against measured U
         from scipy.stats import spearmanr
         rk = {}
@@ -554,7 +570,7 @@ def default_policy():
 
 
 def main():
-    global ARGS
+    global ARGS, CU
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('inputs', nargs='+', metavar='A.def B.lef',
                     help='your layout: the routed DEF, then its LEF files or folders (technology LEF found automatically); '
@@ -562,7 +578,8 @@ def main():
     own = ap.add_argument_group('options for your own layout (all optional)')
     own.add_argument('--nets', help='regular expression: only nets whose name matches are rerouted, e.g. "vco|clk"')
     own.add_argument('--layers', help='signal routing layers, e.g. met1-met5 (default: every LEF routing layer except the lowest)')
-    own.add_argument('--rules', help='OpenRCX rules file (default: bundled SKY130 rules for met* layers)')
+    own.add_argument('--rules', help='OpenRCX rules file (default: bundled SKY130 rules for SKY130 layers; other technologies: '
+                     '"proxy", the geometric coupling proxy in um)')
     own.add_argument('--pool-nets', type=int, default=20, help='how many highest-coupling nets to try (default 20)')
     own.add_argument('--normalize', default='auto', metavar='auto|off|NET[:TIMES]',
                      help='published DEFs that OpenROAD re-patches on its first run are detected and patched first (default auto)')
@@ -598,10 +615,11 @@ def main():
             case['net_regex'] = ARGS.nets
     except C.StageError as e:
         print(f'ERROR: {e}'); sys.exit(2)
+    CU = 'um (proxy)' if case['rules'] == 'proxy' else 'fF'
     out = Path(ARGS.out or C.REPO / 'out' / ARGS.case).resolve(); out.mkdir(parents=True, exist_ok=True)
     # an output folder belongs to one set of inputs: finished stages are reused only for the same inputs
     fp = dict(def_sha256=C.sha256(case['def']), lef_sha256=[C.sha256(l) for l in case['lefs']], layers=case['layers'],
-              rules_sha256=C.sha256(case['rules']), nets=case.get('net_regex'), pool_nets=case.get('pool_nets'),
+              rules_sha256='proxy' if case['rules'] == 'proxy' else C.sha256(case['rules']), nets=case.get('net_regex'), pool_nets=case.get('pool_nets'),
               normalize=case.get('normalize'), tolerate_baseline_drc=bool(case.get('tolerate_baseline_drc')))
     fpf = out / 'inputs.json'
     if fpf.exists() and json.loads(fpf.read_text()) != fp:
@@ -630,11 +648,11 @@ def main():
         b, f = A['baseline'], A['final']; K = A['key_metrics']
         r, t, w = K['rerouted_nets'], K['target_nets'], K['worst_net']
         print(f'\n=== {case["name"]}: before -> after (policy {A["policy"]}, {A["accepted"]}/{A["tried"]} reroutes kept) ===')
-        print(f'  rerouted nets   {r["cc_before_fF"]:10.3f} -> {r["cc_after_fF"]:10.3f} fF   {r["change_pct"]:+.2f}%  '
+        print(f'  rerouted nets   {r["cc_before_fF"]:10.3f} -> {r["cc_after_fF"]:10.3f} {CU}   {r["change_pct"]:+.2f}%  '
               f'({r["n"]} nets, {r["nets_freed"]} freed of >=99% coupling)')
-        print(f'  target nets     {t["cc_before_fF"]:10.3f} -> {t["cc_after_fF"]:10.3f} fF   {t["change_pct"]:+.2f}%  ({t["n"]} nets: {t["selection"]})')
-        print(f'  worst net       {w["before"][1]:10.3f} -> {w["after"][1]:10.3f} fF   ({w["before"][0]} -> {w["after"][0]})')
-        print(f'  design total    {b["cc_fF"]:10.3f} -> {f["cc_fF"]:10.3f} fF   {A["cc_change_pct"]:+.2f}%  (includes nets not touched)')
+        print(f'  target nets     {t["cc_before_fF"]:10.3f} -> {t["cc_after_fF"]:10.3f} {CU}   {t["change_pct"]:+.2f}%  ({t["n"]} nets: {t["selection"]})')
+        print(f'  worst net       {w["before"][1]:10.3f} -> {w["after"][1]:10.3f} {CU}   ({w["before"][0]} -> {w["after"][0]})')
+        print(f'  design total    {b["cc_fF"]:10.3f} -> {f["cc_fF"]:10.3f} {CU}   {A["cc_change_pct"]:+.2f}%  (includes nets not touched)')
         print(f'  wire length     {b["wl_um"]:10.1f} -> {f["wl_um"]:10.1f} um   {A["wl_change_pct"]:+.2f}%')
         print(f'  vias            {b["vias"]:10d} -> {f["vias"]:10d}      {A["via_change"]:+d}')
         print(f'  final layout    {A["final_def"]}')
