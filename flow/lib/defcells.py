@@ -204,6 +204,10 @@ def statement_at(def_path, line_no):
     if not 1 <= line_no <= len(lines):
         return None
     i = line_no - 1
+    # an error at a section header or END line (e.g. a section left empty): the whole section, never the line alone
+    se = re.match(r'^\s*(?:END\s+)?([A-Z]+)\b(?:\s+\d+\s*;)?\s*$', lines[i])
+    if se and se.group(1) not in ('DESIGN', 'VERSION') and re.search(r'^\s*END\s+' + se.group(1) + r'\b', '\n'.join(lines), re.M):
+        return ('section', se.group(1))
     head = re.compile(r'^\s*(' + '|'.join(SECTIONS) + r')\s+\d+\s*;')
     for j in range(i, -1, -1):   # the enclosing section, if any
         if j < i and re.match(r'^\s*END\s+\S+', lines[j]):
@@ -245,7 +249,14 @@ def sanitize(def_path, lefs, drop=None, top_layer=None, above=()):
         text = re.sub(r'(?:\+\s*)?\bMASKSHIFT\s+[^\s;]+', ' ', text)
         text = re.sub(r'(?:\+\s*)?\bMASK\s+[0-9A-Fa-f]+\b', ' ', text)
     drop_lines = {x[1] for x in drop if x[0] == 'line'}
-    drop_names = {x[1] for x in drop if x[0] == 'name'}
+    drop_names = {x[1] for x in drop if x[0] == 'name'} - known - lef_vias   # never a layer or a LEF via name
+    drop_names = {n for n in drop_names if not re.match(r'^-?[\d.]+$', n)}
+    emptied = []
+    for sec in sorted({x[1] for x in drop if x[0] == 'section'} - {'DESIGN'}):   # whole sections OpenROAD cannot read
+        text, k = re.subn(r'^[ \t]*' + sec + r'\b[^\n]*\n.*?^[ \t]*END[ \t]+' + sec + r'\b[^\n]*\n?', '', text, count=1,
+                          flags=re.M | re.S)
+        if k:
+            emptied.append(sec)
     drop_conns = {(x[1], x[2]) for x in drop if x[0] == 'conn'}
     mpins, no_pin, to_routed, pins_top = macro_pins(lefs), [], [], []
     above = set(above)
@@ -298,6 +309,11 @@ def sanitize(def_path, lefs, drop=None, top_layer=None, above=()):
             return fn(st)
         kept = [x for x in (gate(st) for st in stmts) if x is not None]
         count = sum(1 for x in kept if x.strip().startswith('-'))
+        if count == 0 and any(st.strip().startswith('-') for st in stmts) and name not in ('NETS', 'COMPONENTS'):
+            emptied.append(name)   # every statement left out: the whole section goes (an empty one is a parse error)
+            e = re.search(r'^[ \t]*END[ \t]+' + name + r'\b[^\n]*\n?', text[m.end() + len(body):], re.M)
+            text = text[:m.start()] + text[m.end() + len(body) + (e.end() if e else 0):]
+            return
         text = text[:m.start()] + m.group(1) + str(count) + m.group(3) + ''.join(kept) + text[m.end() + len(body):]
 
     def comp(st):
@@ -460,6 +476,8 @@ def sanitize(def_path, lefs, drop=None, top_layer=None, above=()):
     if no_pin:
         notes.append(f'{len(no_pin)} connection(s) to pins the cell LEF does not define are left out (e.g. '
                      f'{" ".join("%s/%s" % x for x in no_pin[:3])}; usually the transistor bulk pin)')
+    if emptied:
+        notes.append(f'section(s) {", ".join(sorted(set(emptied)))} left out as a whole (nothing in them OpenROAD can use)')
     if dups:
         notes.append(f'{len(dups)} repeated definition(s) of a name are left out, the first kept (e.g. {dups[0]})')
     if left_out:

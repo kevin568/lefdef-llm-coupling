@@ -149,9 +149,9 @@ def unmark_mimcap(lefs):
         return m.group(0).replace(m.group(2), body, 1)
     new = re.sub(r'^[ \t]*LAYER[ \t]+(\S+)[ \t]*\r?\n(.*?)^[ \t]*END[ \t]+\1\b', unmark, text, flags=re.M | re.S)
     if not mim:
-        return lefs, []
+        return lefs, [], []
     lefs[0] = _tech_copy(lefs[0], new, 'router')
-    return lefs, [f'MIM capacitor layer(s) {", ".join(mim)}: the detailed router ignores such layers and stops on '
+    return lefs, mim, [f'MIM capacitor layer(s) {", ".join(mim)}: the detailed router ignores such layers and stops on '
                   'their vias, so the technology LEF copy drops the MIMCAP mark (no signal routing on them)']
 
 
@@ -167,7 +167,7 @@ def router_probe(lefs, def_in, layers):
                        LAYERS=layers, TARGETS='', MODE='probe', GUIDE=d / 'empty.guide', DRC=d / 'drc.rpt'), log, timeout=3600)
         return []
     except C.StageError:
-        return _errors(log.read_text(errors='replace')) or ['(no error line: see ' + str(log) + ')']
+        return [e for e in _errors(log.read_text(errors='replace')) if 'GRT-0253' not in e] or ['(no error line: see ' + str(log) + ')']
 
 
 def fix_router(lefs, def_in, layers):

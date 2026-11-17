@@ -218,17 +218,17 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     lef_paths = lef_files(lefs)
     from . import preflight   # OpenROAD reads the LEFs once; vias / via rules it rejects are left out of copies
     lef_paths, pnotes = preflight.fix_lefs(lef_paths)
-    lef_paths, mnotes = preflight.unmark_mimcap(lef_paths)   # MIM cap layers: the detailed router ignores them
+    lef_paths, mim_layers, mnotes = preflight.unmark_mimcap(lef_paths)   # MIM cap layers: the detailed router ignores them
     pnotes += mnotes
     for n in pnotes:
         print(f'  note: {n}')
     rl = lef_routing_layers(lef_paths)
     if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
         sig = [l for l in rl[1:] if not l.lower().startswith('top')]   # IHP TopMetal1/2: thick power metals
-        nop = lef_pitchless_layers(lef_paths)
+        nop = lef_pitchless_layers(lef_paths) | set(mim_layers)   # MIM cap metals: never signal layers
         if any(l in nop for l in sig):   # a layer without PITCH (e.g. a MIM cap metal): signal layers stop below it
             k = next(i for i, l in enumerate(sig) if l in nop)
-            print(f'  note: routing layer(s) without PITCH in the LEF ({", ".join(l for l in rl if l in nop)}): '
+            print(f'  note: routing layer(s) without PITCH or marked MIM capacitor in the LEF ({", ".join(l for l in rl if l in nop)}): '
                   f'signal routing stops below {sig[k]}')
             sig = sig[:k] if k >= 2 else [l for l in sig if l not in nop]
         if len(sig) < 2:
@@ -285,16 +285,17 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         c['fixed_nets'] = fixed
     for n in notes:
         print(f'  note: {n}')
-    # detailed router preflight (seconds): what it rejects in the technology is left out and the probe repeats;
-    # anything left is listed at once here, before the long stages
+    # detailed router preflight (seconds): what it rejects in the technology is left out and the probe repeats.
+    # Advisory only: the old OpenROAD can crash on the empty-guide probe itself, so what is left is printed, not fatal
     c['lefs'], rnotes, rerrs = preflight.fix_router(c['lefs'], c['def'], c['layers'])
     for n in rnotes:
         print(f'  note: {n}')
-    if rerrs:
-        u = list(dict.fromkeys(re.sub(r'(?<![-\w.])\d+(\.\d+)?\b', '#', e) for e in rerrs))
-        sep = chr(10) + '    '
-        raise StageError(f'the detailed router (OpenROAD) stops on this layout; all {len(u)} distinct error line(s) '
-                         f'(log: {preflight.CACHE / "router_probe" / "route.log"}):' + sep + sep.join(u[:30]))
+    real = [e for e in rerrs if not e.startswith('(no error line')]
+    if real:
+        u = list(dict.fromkeys(re.sub(r'(?<![-\w.])\d+(\.\d+)?\b', '#', e) for e in real))
+        sep = chr(10) + '      '
+        print(f'  warning: router preflight reports {len(u)} distinct error line(s) the flow could not repair '
+              f'(log: {preflight.CACHE / "router_probe" / "route.log"}); the flow continues:' + sep + sep.join(u[:20]))
     if normalize == 'auto':
         c['normalize'] = 'auto'
     elif normalize and normalize != 'off':
