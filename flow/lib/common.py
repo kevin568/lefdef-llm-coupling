@@ -213,15 +213,66 @@ from .defcells import sanitize as sanitize_def  # noqa: E402
 
 def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', strict=False):
     """Case from command-line paths (relative paths are taken from the current directory)."""
+    import contextlib
+    import io
     if not lefs:
         raise StageError('give the LEF files after the DEF: python flow/run.py A.def B.lef (files or folders)')
     lef_paths = lef_files(lefs)
     from . import preflight   # OpenROAD reads the LEFs once; vias / via rules it rejects are left out of copies
     lef_paths, pnotes = preflight.fix_lefs(lef_paths)
-    lef_paths, mim_layers, mnotes = preflight.unmark_mimcap(lef_paths)   # MIM cap layers: the detailed router ignores them
-    pnotes += mnotes
     for n in pnotes:
         print(f'  note: {n}')
+    if not Path(def_file).expanduser().exists():
+        raise StageError(f'missing input file {Path(def_file).expanduser().resolve()}')
+    # MIM capacitor layers: which way the router accepts them depends on the PDK and the cells, so every variant is
+    # set up on this design and checked with the router probe; the first one without router errors is used
+    variants = preflight.mimcap_variants(lef_paths) or [dict(desc='', lefs=lef_paths, mim=[], skip=[], tech_errs=[])]
+    tried = []
+    for v in variants:
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                c, rerrs = _setup(name, def_file, v['lefs'], layers, rules, pool_nets, v['mim'], v['skip'])
+        except StageError as e:
+            tried.append(dict(v=v, c=None, errs=[str(e).splitlines()[0]], out=buf.getvalue(), exc=e))
+            continue
+        tried.append(dict(v=v, c=c, errs=rerrs, out=buf.getvalue(), exc=None))
+        if not rerrs:
+            break
+    ok = [t for t in tried if t['c'] is not None]
+    if not ok:   # every variant failed during setup: show the first one's output and error
+        print(tried[0]['out'], end='')
+        raise tried[0]['exc']
+    best = next((t for t in ok if not t['errs']), None) or min(ok, key=lambda t: len(t['errs']))
+    v, c, rerrs = best['v'], best['c'], best['errs']
+    if v['mim']:
+        rej = '; '.join(f'"{t["v"]["desc"]}": {t["errs"][0][:90]}' for t in tried if t is not best and t['errs'])
+        print(f'  note: MIM capacitor layer(s) {", ".join(v["mim"])}: the router accepts "{v["desc"]}" on this design '
+              f'(used; no signal routing on them)' + (f'. Rejected: {rej}' if rej else ''))
+    print(best['out'], end='')
+    if rerrs:
+        u = list(dict.fromkeys(re.sub(r'(?<![-\w.])\d+(\.\d+)?\b', '#', e) for e in rerrs))
+        sep = chr(10) + '      '
+        print(f'  warning: router preflight reports {len(u)} distinct error line(s) the flow could not repair '
+              f'(log: {preflight.CACHE / "router_probe" / "route.log"}); the flow continues:' + sep + sep.join(u[:20]))
+    if normalize == 'auto':
+        c['normalize'] = 'auto'
+    elif normalize and normalize != 'off':
+        net, _, times = normalize.rpartition(':')
+        if not net or not times.isdigit():
+            net, times = normalize, '2'
+        c['normalize'] = dict(net=def_net_name(c['def'], net), times=int(times))
+    if not strict:
+        c['tolerate_baseline_drc'] = True
+    for p in [c['def'], *([] if c['rules'] == 'proxy' else [c['rules']]), *c['lefs']]:
+        if not Path(p).exists():
+            raise StageError(f'missing input file {p}')
+    return c
+
+
+def _setup(name, def_file, lef_paths, layers, rules, pool_nets, mim_layers, skip_tracks):
+    """one setup attempt with these LEFs: layers, pin access, DEF repairs, router probe -> (case, router error lines)"""
+    from . import preflight
     rl = lef_routing_layers(lef_paths)
     if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
         sig = [l for l in rl[1:] if not l.lower().startswith('top')]   # IHP TopMetal1/2: thick power metals
@@ -250,8 +301,8 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
                   'geometric proxy (um of same-layer parallel run within 2 pitches; give --rules FILE for fF)')
     c = dict(name=name, lefs=lef_paths, layers=layers, rules=rules if rules == 'proxy' else str(Path(rules).expanduser().resolve()),
              pool_nets=pool_nets, split='user', domain='user')
-    if not Path(def_file).expanduser().exists():
-        raise StageError(f'missing input file {Path(def_file).expanduser().resolve()}')
+    if skip_tracks:
+        c['skip_tracks'] = list(skip_tracks)
     c['def'] = str(plain_file(Path(def_file).expanduser().resolve()))
     # DEF parts the LEFs do not define (cells, via rules, layers): a DEF copy without them, so the flow keeps running
     # then OpenROAD reads the copy; each item it still reports (DEF line number) is left out and the copy rewritten
@@ -285,30 +336,12 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         c['fixed_nets'] = fixed
     for n in notes:
         print(f'  note: {n}')
-    # detailed router preflight (seconds): what it rejects in the technology is left out and the probe repeats.
-    # Advisory only: the old OpenROAD can crash on the empty-guide probe itself, so what is left is printed, not fatal
-    c['lefs'], rnotes, rerrs = preflight.fix_router(c['lefs'], c['def'], c['layers'])
+    # detailed router preflight (seconds) on this design: what it rejects in the technology is left out and the
+    # probe repeats. Advisory: the old OpenROAD can crash on the empty-guide probe itself (no error line: ignored)
+    c['lefs'], rnotes, rerrs = preflight.fix_router(c['lefs'], c['def'], c['layers'], skip_tracks)
     for n in rnotes:
         print(f'  note: {n}')
-    real = [e for e in rerrs if not e.startswith('(no error line')]
-    if real:
-        u = list(dict.fromkeys(re.sub(r'(?<![-\w.])\d+(\.\d+)?\b', '#', e) for e in real))
-        sep = chr(10) + '      '
-        print(f'  warning: router preflight reports {len(u)} distinct error line(s) the flow could not repair '
-              f'(log: {preflight.CACHE / "router_probe" / "route.log"}); the flow continues:' + sep + sep.join(u[:20]))
-    if normalize == 'auto':
-        c['normalize'] = 'auto'
-    elif normalize and normalize != 'off':
-        net, _, times = normalize.rpartition(':')
-        if not net or not times.isdigit():
-            net, times = normalize, '2'
-        c['normalize'] = dict(net=def_net_name(c['def'], net), times=int(times))
-    if not strict:
-        c['tolerate_baseline_drc'] = True
-    for p in [c['def'], *([] if c['rules'] == 'proxy' else [c['rules']]), *c['lefs']]:
-        if not Path(p).exists():
-            raise StageError(f'missing input file {p}')
-    return c
+    return c, [e for e in rerrs if not e.startswith('(no error line')]
 
 
 def openroad_bin():

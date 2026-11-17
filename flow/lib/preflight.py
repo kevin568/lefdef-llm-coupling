@@ -155,7 +155,7 @@ def unmark_mimcap(lefs):
                   'their vias, so the technology LEF copy drops the MIMCAP mark (no signal routing on them)']
 
 
-def router_probe(lefs, def_in, layers):
+def router_probe(lefs, def_in, layers, skip_tracks=()):
     """Run the reroute script once with an empty guide (nothing is rerouted): the detailed router reads the whole
     technology and does pin access for every cell, which is where it stops on what it cannot use. -> error lines"""
     d = CACHE / 'router_probe'
@@ -164,19 +164,20 @@ def router_probe(lefs, def_in, layers):
     log = d / 'route.log'
     try:
         C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(map(str, lefs)), STATE_DEF=def_in, OUT_DEF=d / 'out.def',
-                       LAYERS=layers, TARGETS='', MODE='probe', GUIDE=d / 'empty.guide', DRC=d / 'drc.rpt'), log, timeout=3600)
+                       LAYERS=layers, TARGETS='', MODE='probe', GUIDE=d / 'empty.guide', DRC=d / 'drc.rpt',
+                       SKIP_TRACKS=' '.join(skip_tracks)), log, timeout=3600)
         return []
     except C.StageError:
         return [e for e in _errors(log.read_text(errors='replace')) if 'GRT-0253' not in e] or ['(no error line: see ' + str(log) + ')']
 
 
-def fix_router(lefs, def_in, layers):
+def fix_router(lefs, def_in, layers, skip_tracks=()):
     """Probe the detailed router; vias / via rules it rejects (DRT-0129 unknown layer) are left out of a copy of the
     technology LEF, together with every other via on that layer, and the probe repeats (at most 8 rounds).
     -> (lefs, notes, remaining error lines or [])"""
     lefs = [str(l) for l in lefs]; removed = set(); errs = []
     for _ in range(8):
-        errs = router_probe(lefs, def_in, layers)
+        errs = router_probe(lefs, def_in, layers, skip_tracks)
         if not errs:
             break
         text = Path(lefs[0]).read_text(errors='replace')
@@ -189,3 +190,101 @@ def fix_router(lefs, def_in, layers):
     notes = [f'the detailed router rejects {len(removed)} via / via rule(s) ({", ".join(sorted(removed)[:4])}'
              f'{" ..." if len(removed) > 4 else ""}): left out of the technology LEF copy'] if removed else []
     return lefs, notes, errs
+
+
+# ---------------------------------------------------------------- MIM capacitor layers: let the router decide
+TECH_TCL = r'''
+foreach l $::env(LEFS) { if {[catch {read_lef $l} e]} { puts "FLOW_LEF_FAIL $e" } }
+if {[catch {read_def $::env(DEF_IN)} e]} { puts "FLOW_DEF_FAIL $e" }
+set f [open $::env(GUIDE) w]; close $f
+catch {read_guides $::env(GUIDE)}
+if {[catch {detailed_route -verbose 0} e]} { puts "FLOW_DRT_FAIL $e" }
+puts FLOW_DONE
+'''
+
+
+def tech_probe(lefs):
+    """technology errors of the detailed router for these LEFs (it parses the technology before anything else),
+    using a tiny empty design: seconds. -> '[ERROR DRT-...' lines"""
+    d = CACHE / 'tech_probe'; d.mkdir(parents=True, exist_ok=True)
+    u = re.search(r'DATABASE\s+MICRONS\s+(\d+)', Path(lefs[0]).read_text(errors='replace'))
+    u = int(u.group(1)) if u else 1000
+    (d / 'probe.def').write_text(f'VERSION 5.8 ;\nDIVIDERCHAR "/" ;\nBUSBITCHARS "[]" ;\nDESIGN techprobe ;\n'
+                                 f'UNITS DISTANCE MICRONS {u} ;\nDIEAREA ( 0 0 ) ( {100 * u} {100 * u} ) ;\nEND DESIGN\n')
+    (d / 'probe.tcl').write_text(TECH_TCL)
+    env = dict(os.environ, LEFS=' '.join(map(str, lefs)), DEF_IN=str(d / 'probe.def'), GUIDE=str(d / 'empty.guide'))
+    try:
+        r = subprocess.run([C.openroad_bin(), '-no_init', '-no_splash', '-exit', str(d / 'probe.tcl')], env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
+        log = r.stdout.decode(errors='replace')
+    except subprocess.TimeoutExpired:
+        return []
+    (d / 'probe.log').write_text(log)
+    return [l.strip() for l in log.splitlines() if re.search(r'\[ERROR (DRT|ODB)-\d+\]', l)]
+
+
+def _mim_layers(text):
+    return [n for n, b in ((m.group(1), m.group(2)) for m in
+            re.finditer(r'^[ \t]*LAYER[ \t]+(\S+)[ \t]*\r?\n(.*?)^[ \t]*END[ \t]+\1\b', text, re.M | re.S))
+            if re.search(r'LEF58_TYPE\s+"\s*TYPE\s+MIMCAP', b)]
+
+
+def _drop_layer_geometry(text, layers):
+    """MACRO PIN / OBS geometry on these layers left out ('LAYER x ;' and its shapes up to the next LAYER / END)"""
+    out, skip = [], False
+    for line in text.splitlines(True):
+        m = re.match(r'^\s*LAYER\s+(\S+)\s*;', line)
+        if m:
+            skip = m.group(1) in layers
+            if skip:
+                continue
+        elif skip and re.match(r'^\s*(RECT|POLYGON|PATH|WIDTH|ITERATE|\(|-?[\d.])', line):
+            continue
+        else:
+            skip = False if re.match(r'^\s*(END|VIA|LAYER|PORT)\b', line) else skip
+        out.append(line)
+    return ''.join(out)
+
+
+def mimcap_variants(lefs):
+    """LEF58_TYPE MIMCAP layers (MIM capacitor metals): the old detailed router ignores them, which breaks either the
+    via rules ON them (DRT-0129 unknown layer) or, with the mark dropped, the via rules that skip OVER them
+    (DRT-0126 / DRT-0130 non-consecutive layers), or cell shapes on them (DRT-0094). Which way works depends on the
+    PDK and the cells, so the flow setup tries these variants on the real design (router probe) and keeps the first
+    one the router accepts:
+      1 keep the mark, leave out the vias / via rules on the layer (and build no tracks on it)
+      2 drop the mark (an ordinary metal layer for the router)
+      3 remove the layer (and the cell geometry on it)
+    -> [dict(desc, lefs, mim, skip, tech_errs)], technology-clean first; [] without MIMCAP layers"""
+    lefs = [str(l) for l in lefs]
+    text = Path(lefs[0]).read_text(errors='replace')
+    mim = _mim_layers(text)
+    if not mim:
+        return []
+    on = _vias_on_layers(text, mim)
+    unmarked = re.sub(r'^[ \t]*PROPERTY[ \t]+LEF58_TYPE[ \t]+"[^"]*\bMIMCAP\b[^"]*"[ \t]*;[ \t]*\r?\n', '', text, flags=re.M)
+    removed = re.sub(r'^[ \t]*LAYER[ \t]+(\S+)[ \t]*\r?\n.*?^[ \t]*END[ \t]+\1\b[^\n]*\n?',
+                     lambda m: '' if m.group(1) in mim else m.group(0), _strip(text, on, on), flags=re.M | re.S)
+    variants = [(f'keep the MIMCAP mark, leave out the {len(on)} via / via rule(s) on it', _strip(text, on, on), False),
+                ('drop the MIMCAP mark', unmarked, False),
+                ('remove the layer and the cell geometry on it', _drop_layer_geometry(removed, set(mim)), True)]
+    out = []
+    for k, (desc, new, cells_too) in enumerate(variants):
+        cand = [_tech_copy(lefs[0], new, f'mim{k + 1}')]
+        for l in lefs[1:]:
+            if cells_too:
+                t = Path(l).read_text(errors='replace')
+                cand.append(_tech_copy(l, _drop_layer_geometry(t, set(mim)), f'nomim{k + 1}'))
+            else:
+                cand.append(l)
+        # tracks are never built on a layer the router ignores (DRT-0094 "Cannot find layer")
+        out.append(dict(desc=desc, lefs=cand, mim=mim, skip=mim if k == 0 else [], tech_errs=tech_probe(cand)))
+    return sorted(out, key=lambda v: bool(v['tech_errs']))   # technology-clean variants first, in this order
+
+
+def pick_mimcap(lefs):
+    """the first technology-clean variant (see mimcap_variants) -> (lefs, MIM layer names, notes)"""
+    v = mimcap_variants(lefs)
+    if not v:
+        return [str(l) for l in lefs], [], []
+    return v[0]['lefs'], v[0]['mim'], [f'MIM capacitor layer(s) {", ".join(v[0]["mim"])}: "{v[0]["desc"]}"']

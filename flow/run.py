@@ -68,7 +68,8 @@ def route_job(case, state_def, nets, mode, rundir, guide_rects=None):
     if mode == 'guide':
         guide.write_text(''.join(f'{n}\n(\n' + ''.join(f'{a} {b} {c} {d} {l}\n' for a, b, c, d, l in guide_rects[n]) + ')\n' for n in nets))
     sec = C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(case['lefs']), STATE_DEF=state_def, OUT_DEF=rundir / 'out.def',
-                         LAYERS=case['layers'], TARGETS=tcl_list(nets), MODE=mode, GUIDE=guide, DRC=rundir / 'drc.rpt'),
+                         LAYERS=case['layers'], TARGETS=tcl_list(nets), MODE=mode, GUIDE=guide, DRC=rundir / 'drc.rpt',
+                         SKIP_TRACKS=' '.join(case.get('skip_tracks', []))),
                          rundir / 'route.log', threads=ARGS.threads)
     return sec
 

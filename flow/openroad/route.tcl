@@ -6,8 +6,11 @@ set block [ord::get_db_block]
 # DEFs written without TRACKS (e.g. some test DEFs): build the missing track grids from the LEF pitches
 # (a layer without PITCH, e.g. a MIM capacitor metal: width + spacing, else the pitch of the layer below)
 set last_pitch 0
+# layers the detailed router ignores (MIM capacitor metals kept marked): no tracks there (DRT-0094 otherwise)
+set skip_tracks [expr {[info exists ::env(SKIP_TRACKS)] ? $::env(SKIP_TRACKS) : ""}]
 foreach layer [[ord::get_db_tech] getLayers] {
   if {[$layer getType] != "ROUTING"} { continue }
+  if {[lsearch -exact $skip_tracks [$layer getName]] >= 0} { continue }
   set lp [$layer getPitch]
   if {$lp > 0} { set last_pitch $lp }
   if {[$block findTrackGrid $layer] != "NULL"} { continue }

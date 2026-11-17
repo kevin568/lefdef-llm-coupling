@@ -131,7 +131,7 @@ def c_tech(tech, top):
             if not d:
                 issues.append(f'routing layer {name} has no DIRECTION (global router error GRT-0084 if it is a signal layer)')
             if mim:
-                issues.append(f'routing layer {name} is LEF58_TYPE MIMCAP (detailed router ignores it: flow drops the mark in its copy)')
+                issues.append(f'routing layer {name} is LEF58_TYPE MIMCAP (detailed router ignores it: the flow tries 3 ways on this design and keeps the one the router accepts, see check 7)')
     unknown = []
     for m in re.finditer(r'^\s*(VIA|VIARULE)\s+(\S+)[^\n]*\n(.*?)^\s*END\s+\2\s*$', t, re.M | re.S):
         bad = sorted({l for l in re.findall(r'^\s*LAYER\s+(\S+)\s*;', m.group(3), re.M) if l not in names})
@@ -289,7 +289,7 @@ def c_route(case, d, n_nets, geo):
         try:
             C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(case['lefs']), STATE_DEF=case['def'], OUT_DEF=rd / 'out.def',
                            LAYERS=case['layers'], TARGETS='{' + n + '}', MODE='default', GUIDE=rd / 'grt.guide',
-                           DRC=rd / 'drc.rpt'), log, timeout=3600)
+                           DRC=rd / 'drc.rpt', SKIP_TRACKS=' '.join(case.get('skip_tracks', []))), log, timeout=3600)
             drc = len(re.findall(r'violation type', (rd / 'drc.rpt').read_text(errors='replace'))) if (rd / 'drc.rpt').exists() else 0
             det.append(f'OK   {n} ({len(geo["nets"][n]["pins"])} pins) {time.time() - t0:.0f}s, DRC markers {drc}'); ok += 1
         except Exception:   # noqa: BLE001
