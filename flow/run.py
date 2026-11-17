@@ -81,7 +81,7 @@ def route_errors(logs):
             lines = Path(lg).read_text(errors='replace').splitlines()
         except OSError:
             continue
-        for l in sorted({re.sub(r'\b\d+(\.\d+)?\b', '#', x.strip()) for x in lines
+        for l in sorted({re.sub(r'(?<![-\w.])\d+(\.\d+)?\b', '#', x.strip()) for x in lines
                          if re.search(r'\[ERROR|^ERROR|^Error|FLOW_ERROR', x.strip())}):
             seen[l] = seen.get(l, 0) + 1
     if not seen:
