@@ -623,8 +623,11 @@ def main():
               normalize=case.get('normalize'), tolerate_baseline_drc=bool(case.get('tolerate_baseline_drc')))
     fpf = out / 'inputs.json'
     if fpf.exists() and json.loads(fpf.read_text()) != fp:
-        print(f'ERROR: {out} holds a run with different inputs or options ({fpf}). Use --out <new folder>, '
-              f'or delete that folder to start again.'); sys.exit(2)
+        old = json.loads(fpf.read_text())
+        diff = ', '.join(k for k in fp if old.get(k) != fp[k]) or 'inputs'
+        print(f'ERROR: the output folder {out} holds an earlier run with different {diff}.\n'
+              f'  Start again in that folder (deletes the earlier results):  rm -rf {out}\n'
+              f'  or keep them and write elsewhere: add  --out {out}_2  to the command'); sys.exit(2)
     fpf.write_text(json.dumps(fp, indent=1))
     todo = [ARGS.only] if ARGS.only else STAGES[STAGES.index(ARGS.start):] if ARGS.start else STAGES
     for name in STAGES:
