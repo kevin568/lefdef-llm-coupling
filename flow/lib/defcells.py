@@ -259,6 +259,18 @@ def sanitize(def_path, lefs, drop=None, top_layer=None, above=(), ignore_layers=
     # multi-patterning colours: OpenROAD 2.0 (conda) writes '( x y )MASK 1' back out and cannot read its own DEF;
     # the flow does not use colours, so the copy goes without them
     n_mask = len(re.findall(r'\bMASK\s+[0-9A-Fa-f]+\b|\bMASKSHIFT\s+\S+', text))
+    # non-default rules and shields do not matter for coupling, and the old OpenROAD crashes on incomplete ones
+    # (oaDefault without rules for M5-M7: segfault in read / export; a rule on Poly: map::at in the router)
+    n_ndr = len(re.findall(r'^\s*-\s+\S+', (_section(text, 'NONDEFAULTRULES') or (None, ''))[1], re.M))
+    if n_ndr or re.search(r'\+\s*(NONDEFAULTRULE|SHIELDNET|SHIELD)\s', text):
+        text = re.sub(r'^[ \t]*NONDEFAULTRULES[ \t]+\d+[ \t]*;.*?^[ \t]*END[ \t]+NONDEFAULTRULES\b[^\n]*\n?', '', text,
+                      flags=re.M | re.S)
+        text = re.sub(r'\+\s*(?:NONDEFAULTRULE|SHIELDNET)\s+\S+', ' ', text)
+        text = re.sub(r'\+\s*SHIELD\s+\S+', '+ ROUTED', text)   # a shield path: ordinary wiring of its (power) net
+        ndr_note = (f'non-default rules ({n_ndr}) and shield references left out of the copy (not needed for '
+                    'coupling; the old OpenROAD crashes on incomplete ones)')
+    else:
+        ndr_note = ''
     if n_mask:
         text = re.sub(r'^[ \t]*COMPONENTMASKSHIFT\b[^;]*;[^\n]*\n', '', text, flags=re.M)
         text = re.sub(r'(?:\+\s*)?\bMASKSHIFT\s+[^\s;]+', ' ', text)
@@ -489,6 +501,8 @@ def sanitize(def_path, lefs, drop=None, top_layer=None, above=(), ignore_layers=
                      f'(e.g. {", ".join(sorted(set(other_fixes))[:4])})')
     if bad_layers:
         notes.append(f'wiring on layer(s) the LEF does not define ({", ".join(sorted(bad_layers)[:4])}) is left out')
+    if ndr_note:
+        notes.append(ndr_note)
     if ndr_dev:
         notes.append(f'{len(ndr_dev)} non-default rule entr(ies) on non-metal layers left out (e.g. {", ".join(ndr_dev[:3])}): '
                      'the detailed router crashes on them (map::at while reading the technology)')
