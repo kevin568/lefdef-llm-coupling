@@ -113,7 +113,7 @@ def fixed_nets(case):
 
 def net_ok(case, geo, n):
     v = geo['nets'][n]
-    if v['signal_type'] not in C.SIG or not v['routed'] or not (2 <= len(v['pins']) <= 8):
+    if v['signal_type'] not in C.SIG or not v['routed'] or not (2 <= len(v['pins']) <= case.get('max_pins', 8)):
         return False
     if n.replace(chr(92), '') in fixed_nets(case):   # touches a cell without a LEF: kept as it is
         return False
@@ -181,7 +181,10 @@ def auto_normalize(case, d, base_def, st):
     cc = spef.read(d / 'input.spef')['listed_cc']
     fx = fixed_nets(case)
     sig = [n for n in sig if n.replace(chr(92), '') not in fx]
-    pool = sorted((n for n in sig if 2 <= conns[n] <= 8 and (not rx or re.search(rx, n))),
+    mine = [n for n in sig if not rx or re.search(rx, n)]
+    if not any(2 <= conns[n] <= case.get('max_pins', 8) for n in mine) and any(conns[n] > 8 for n in mine):
+        case['max_pins'] = 10 ** 6   # analog layouts (multi-finger devices): every net has > 8 connections
+    pool = sorted((n for n in sig if 2 <= conns[n] <= case.get('max_pins', 8) and (not rx or re.search(rx, n))),
                   key=lambda n: (-cc.get(n, 0.), n))[:case.get('pool_nets', 20)]
     two_pin = [n for n in sig if conns[n] == 2 and n not in pool and not (rx and re.search(rx, n))]
     probe = min(two_pin, key=lambda n: (len(ref[n]), n)) if two_pin else None
@@ -265,6 +268,12 @@ def s2_candidates(case, out, st):
     geo = json.loads((b / 'geo.json').read_text()); sp = spef.read(b / 'base.spef')
     base_def = b / 'base.def'
     eligible = [n for n in geo['nets'] if net_ok(case, geo, n)]
+    if not eligible and 'max_pins' not in case:   # analog layouts: every net has > 8 connections; take them all
+        case['max_pins'] = 10 ** 6
+        eligible = [n for n in geo['nets'] if net_ok(case, geo, n)]
+        if eligible:
+            print(f'  note: no net has 2..8 connections (multi-finger devices); all {len(eligible)} routed signal nets '
+                  'with >= 2 connections are candidates')
     if not eligible:
         raise C.StageError('no eligible net (signal, routed, 2..8 pins, case filter'
                            + (f'; {len(case["fixed_nets"])} nets touch cells without a LEF and are kept as they are: '
