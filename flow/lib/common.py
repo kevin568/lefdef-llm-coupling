@@ -99,12 +99,13 @@ def def_net_name(def_file, net):
 
 
 def plain_file(p):
-    """A .gz input is decompressed once into ~/.cache/lefdef-llm-coupling/<sha>/ (OpenROAD reads plain text)."""
+    """A .gz input is decompressed once into out/.cache/<sha>/ inside this folder (or $LEFDEF_CACHE); OpenROAD
+    reads plain text. Nothing is written outside the repository folder by default."""
     import gzip
     p = Path(p)
     if p.suffix != '.gz':
         return p
-    out = Path.home() / '.cache/lefdef-llm-coupling' / sha256(p)[:16] / p.name[:-3]
+    out = Path(os.environ.get('LEFDEF_CACHE') or REPO / 'out' / '.cache') / sha256(p)[:16] / p.name[:-3]
     if not out.exists():
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(out.suffix + '.part')

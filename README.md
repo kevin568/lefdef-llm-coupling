@@ -36,7 +36,7 @@ python flow/run.py A.def B.lef --nets vco    # only reroute nets whose name matc
 ```
 
 What is decided for you (each can be overridden):
-- **Inputs**: `.def.gz` and `.lef.gz` are accepted (decompressed once into `~/.cache/lefdef-llm-coupling/`); a folder
+- **Inputs**: `.def.gz` and `.lef.gz` are accepted (decompressed once into `out/.cache/` in this folder); a folder
   means every `*.lef` / `*.lef.gz` in it.
 - **LEF order**: the technology LEF (the one with routing `LAYER` definitions) is read first. Several technology LEFs
   (e.g. a whole PDK `lef/` folder) stop with a message: give one technology LEF plus its cell LEF.
@@ -108,8 +108,10 @@ With `--route all` all 192 trees are valid and 112 of them improve U.
 - Linux (or WSL2). OpenROAD with Python (`odb`) support. Tested with OpenROAD `26Q2-1164-g08f67ee5ec` and with the
   conda build `2.0-12381` (Feb 2024). Stage `s0_check` verifies the commands the flow needs.
 - **No OpenROAD, no root, older Linux** (e.g. RHEL/Rocky 8, glibc 2.28, no Docker): `bash tools/install_openroad_conda.sh`
-  puts OpenROAD and the flow's Python into `~/lefdef-tools` (about 1.6 GB, downloads only, conda-forge + litex-hub,
-  no Anaconda "defaults" channel), then `source ~/lefdef-tools/env.sh` and run with `--policy heuristic`. Every library
+  puts OpenROAD and the flow's Python into `local-tools/` inside this folder (about 1.6 GB, 3 GB while installing;
+  downloads only, conda-forge + litex-hub, no Anaconda "defaults" channel). Nothing is written outside this folder:
+  conda's cache, temporary files and home-directory files are redirected into `local-tools/`, which `.gitignore`
+  keeps out of `git pull`. Then `source local-tools/env.sh` (each new terminal) and run with `--policy heuristic`. Every library
   it loads is inside that folder (needs glibc 2.17 or newer); checked end to end on `tempsense` (40/40 valid reroutes,
   same baseline as OpenROAD 26Q2). With that older OpenROAD, the geometry export reads wires from the DEF
   (`flow/lib/defwires.py`, identical shapes to OpenDB's on 6 checked layouts).
