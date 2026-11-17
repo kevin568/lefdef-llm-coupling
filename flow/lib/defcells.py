@@ -237,10 +237,17 @@ def sanitize(def_path, lefs, drop=None):
     removed, dropped_vias, fixed_vias, bad_layers, undefined_vias = set(), set(), [], set(), set()
     drop = drop or set()
     left_out, dups = [], []
+    # multi-patterning colours: OpenROAD 2.0 (conda) writes '( x y )MASK 1' back out and cannot read its own DEF;
+    # the flow does not use colours, so the copy goes without them
+    n_mask = len(re.findall(r'\bMASK\s+[0-9A-Fa-f]+\b|\bMASKSHIFT\s+\S+', text))
+    if n_mask:
+        text = re.sub(r'^[ \t]*COMPONENTMASKSHIFT\b[^;]*;[^\n]*\n', '', text, flags=re.M)
+        text = re.sub(r'(?:\+\s*)?\bMASKSHIFT\s+[^\s;]+', ' ', text)
+        text = re.sub(r'(?:\+\s*)?\bMASK\s+[0-9A-Fa-f]+\b', ' ', text)
     drop_lines = {x[1] for x in drop if x[0] == 'line'}
     drop_names = {x[1] for x in drop if x[0] == 'name'}
     drop_conns = {(x[1], x[2]) for x in drop if x[0] == 'conn'}
-    mpins, no_pin = macro_pins(lefs), []
+    mpins, no_pin, to_routed = macro_pins(lefs), [], []
     s_comp = _section(text, 'COMPONENTS')
     master = dict(re.findall(r'^\s*-\s+(\S+)\s+(\S+)', s_comp[1], re.M)) if s_comp else {}
     if drop_lines:
@@ -321,6 +328,10 @@ def sanitize(def_path, lefs, drop=None):
                     return ''
                 return mm.group(0)
             head = re.sub(r'\(\s*(\S+)\s+(\S+)\s*\)', drop, head)
+            if track and not re.search(r'\bUSE\s+(POWER|GROUND)\b', tail):   # FIXED / COVER signal wiring: reroutable
+                tail, k = re.subn(r'\+\s*(?:FIXED|COVER)(?=\s)', '+ ROUTED', tail)
+                if k:
+                    to_routed.append(net)
             bad = [l for l in re.findall(r'\b(?:ROUTED|FIXED|COVER|NOSHIELD|NEW)\s+([^\s+();]+)', tail)
                    if l not in known and not re.match(r'^-?\d+$', l)]
             undef = {v for v in _via_tokens(tail) if v not in known_vias}
@@ -418,6 +429,11 @@ def sanitize(def_path, lefs, drop=None):
                      f'(e.g. {", ".join(sorted(set(other_fixes))[:4])})')
     if bad_layers:
         notes.append(f'wiring on layer(s) the LEF does not define ({", ".join(sorted(bad_layers)[:4])}) is left out')
+    if to_routed:
+        notes.append(f'{len(to_routed)} signal net(s) have FIXED / COVER wiring: written as ROUTED in the copy so they can be rerouted')
+    if n_mask:
+        notes.append(f'{n_mask} multi-patterning MASK colour mark(s) are left out of the copy (not used by the flow; '
+                     'OpenROAD 2.0 cannot read them back after writing them)')
     if no_pin:
         notes.append(f'{len(no_pin)} connection(s) to pins the cell LEF does not define are left out (e.g. '
                      f'{" ".join("%s/%s" % x for x in no_pin[:3])}; usually the transistor bulk pin)')

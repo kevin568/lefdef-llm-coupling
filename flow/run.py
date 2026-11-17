@@ -46,6 +46,18 @@ def def_nets(path):
     return out
 
 
+def net_counts(ref):
+    """counts only (no names): why no net qualifies"""
+    conn = lambda t: len(re.findall(r'\(\s*\S+\s+\S+\s*\)', t.split('+')[0]))
+    pg = [n for n, t in ref.items() if re.search(r'USE\s+(POWER|GROUND)', t)]
+    wired = [n for n, t in ref.items() if n not in pg and re.search(r'\+\s*(ROUTED|FIXED|COVER)\s', t)]
+    h = {'0-1': 0, '2-8': 0, '>8': 0}
+    for n in wired:
+        c = conn(ref[n]); h['0-1' if c < 2 else '2-8' if c <= 8 else '>8'] += 1
+    return (f'NETS: {len(ref)} nets, {len(pg)} power/ground, {len(ref) - len(pg) - len(wired)} signal nets without wiring, '
+            f'{len(wired)} with wiring (connections per wired net: 0-1: {h["0-1"]}, 2-8: {h["2-8"]}, >8: {h[">8"]})')
+
+
 def tcl_list(nets):
     return ' '.join('{' + n + '}' for n in nets)
 
@@ -163,6 +175,8 @@ def auto_normalize(case, d, base_def, st):
     ref = def_nets(base_def)
     conns = {n: len(re.findall(r'\(\s*\S+\s+\S+\s*\)', t.split('+')[0])) for n, t in ref.items()}
     sig = [n for n, t in ref.items() if 'ROUTED' in t and not re.search(r'USE\s+(POWER|GROUND)', t)]
+    if not sig:   # layouts exported with FIXED / COVER wiring only
+        sig = [n for n, t in ref.items() if re.search(r'\+\s*(FIXED|COVER)\s', t) and not re.search(r'USE\s+(POWER|GROUND)', t)]
     rx = case.get('net_regex')
     cc = spef.read(d / 'input.spef')['listed_cc']
     fx = fixed_nets(case)
@@ -175,7 +189,7 @@ def auto_normalize(case, d, base_def, st):
     if not check:
         info = dict(mode='auto', skipped='no routed signal net to check with', patched=False, stable=None)
         (d / 'normalize.json').write_text(json.dumps(info, indent=1))
-        print('  note: re-patch check skipped (no routed signal net to check with); the DEF is used as it is')
+        print('  note: re-patch check skipped (no routed signal net to check with); the DEF is used as it is. ' + net_counts(ref))
         return base_def
     cur, rounds, dirs = base_def, [], {}
     for k in range(4):
@@ -254,7 +268,8 @@ def s2_candidates(case, out, st):
     if not eligible:
         raise C.StageError('no eligible net (signal, routed, 2..8 pins, case filter'
                            + (f'; {len(case["fixed_nets"])} nets touch cells without a LEF and are kept as they are: '
-                              'give the LEF that defines those cells' if case.get('fixed_nets') else '') + ')')
+                              'give the LEF that defines those cells' if case.get('fixed_nets') else '') + '). '
+                           + net_counts(def_nets(base_def)))
     nets = sorted(eligible, key=lambda n: (-sp['listed_cc'].get(n, 0.), n))[:case.get('pool_nets', 20)]
     # pin access: OpenROAD's own reroute of each pool net (its global-route guide gives the pin-access gcells;
     # the same run is also the "default" (router's choice) candidate of that net)
