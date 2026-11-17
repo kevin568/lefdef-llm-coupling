@@ -67,6 +67,18 @@ def route_job(case, state_def, nets, mode, rundir, guide_rects=None):
     guide = rundir / ('targets.guide' if mode == 'guide' else 'grt.guide')
     if mode == 'guide':
         guide.write_text(''.join(f'{n}\n(\n' + ''.join(f'{a} {b} {c} {d} {l}\n' for a, b, c, d, l in guide_rects[n]) + ')\n' for n in nets))
+    if case.get('router') == 'builtin':   # flow/lib/router.py in its own process (parallel jobs, crash isolation)
+        log = rundir / 'route.log'
+        cmd = [sys.executable, str(C.FLOW / 'lib' / 'router.py'), '--lefs', ','.join(case['lefs']), '--def', str(state_def),
+               '--out', str(rundir / 'out.def'), '--nets', ' '.join(nets), '--layers', case['layers'], '--log', str(log),
+               '--drc', str(rundir / 'drc.rpt'), '--guide-out', str(rundir / 'grt.guide')] + (['--guide', str(guide)] if mode == 'guide' else [])
+        import time as _t
+        t0 = _t.monotonic()
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=3600)
+        if r.returncode != 0 or not (rundir / 'out.def').exists():
+            tail = log.read_text(errors='replace')[-800:] if log.exists() else r.stdout.decode(errors='replace')[-800:]
+            raise C.StageError(f'built-in router failed: {tail.strip()} (log: {log})')
+        return _t.monotonic() - t0
     sec = C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(case['lefs']), STATE_DEF=state_def, OUT_DEF=rundir / 'out.def',
                          LAYERS=case['layers'], TARGETS=tcl_list(nets), MODE=mode, GUIDE=guide, DRC=rundir / 'drc.rpt',
                          SKIP_TRACKS=' '.join(case.get('skip_tracks', []))),
@@ -643,6 +655,9 @@ def main():
     ap.add_argument('--policy', default=None, choices=['llm', 'heuristic', 'random'],
                     help='default: llm when a CUDA GPU and the LLM packages are available, else heuristic')
     ap.add_argument('--adapter', help='LoRA adapter dir (default models/llm_v2/adapter)')
+    ap.add_argument('--router', default='auto', choices=['auto', 'openroad', 'builtin'],
+                    help='reroutes: OpenROAD detailed router, or the built-in track router (flow/lib/router.py); '
+                         'auto: OpenROAD unless it rejects the design')
     ap.add_argument('--route', default='best', choices=['best', 'all'], help='best: policy top-1 per net; all: every candidate')
     ap.add_argument('--from', dest='start', choices=STAGES, help='re-run from this stage')
     ap.add_argument('--only', choices=STAGES, help='run a single stage')
@@ -656,12 +671,14 @@ def main():
             def_file = ARGS.def_file or first
             lefs = ARGS.inputs[1:] + ([ARGS.lef] if ARGS.lef else [])
             ARGS.case = first if ARGS.def_file else re.sub(r'\.def(\.gz)?$', '', Path(first).name, flags=re.I)
-            case = C.own_case(ARGS.case, def_file, lefs, ARGS.layers, ARGS.rules, ARGS.pool_nets, ARGS.normalize, ARGS.strict)
+            case = C.own_case(ARGS.case, def_file, lefs, ARGS.layers, ARGS.rules, ARGS.pool_nets, ARGS.normalize, ARGS.strict,
+                              ARGS.router)
         else:
             if len(ARGS.inputs) > 1:
                 raise C.StageError(f'"{first}" is not a .def file; give the DEF first: python flow/run.py A.def B.lef')
             ARGS.case = first
             case = C.load_case(ARGS.case, ARGS.cases)
+            case['router'] = 'builtin' if ARGS.router == 'builtin' else 'openroad'
         if ARGS.policy is None:
             ARGS.policy = default_policy()
         if ARGS.nets:

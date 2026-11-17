@@ -27,6 +27,16 @@ net's top neighbours, and for the top nets suggests lower-coupling trees with an
 against OpenRCX on 6 public layouts); the estimated reduction is an optimistic upper bound, because nothing is
 rerouted or re-extracted: confirm the suggested nets with the full flow below.
 
+## Built-in router (`--router builtin`, `flow/lib/router.py`)
+
+Reroutes normally use OpenROAD's detailed router. When it rejects a technology (for example the 2024 conda OpenROAD
+on commercial FinFET PDKs with MIM capacitor layers or device-layer pins), `--router auto` (the default) switches to
+the built-in router on the full design; `--router builtin` forces it. It is a simplified track-grid A* router in the
+spirit of MAGICAL's anaroute: LEF widths / spacings / pitches / preferred directions, every other net's wires and the
+cells' pins / OBS as obstacles, via pads checked for spacing, off-grid pin access with exact spacing checks, and the
+policy's candidate tree as a guide (cost penalty outside its corridor). Only the target net is rewritten; a spacing
+self-check writes drc.rpt, so a reroute with a violation is not counted as valid. It is not a signoff DRC.
+
 ## Quick start
 
 ```bash

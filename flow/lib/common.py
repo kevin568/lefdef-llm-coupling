@@ -211,7 +211,7 @@ SKY130_LAYERS = {'li1', 'met1', 'met2', 'met3', 'met4', 'met5'}
 from .defcells import sanitize as sanitize_def  # noqa: E402
 
 
-def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', strict=False):
+def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', strict=False, router='auto'):
     """Case from command-line paths (relative paths are taken from the current directory)."""
     import contextlib
     import io
@@ -263,6 +263,11 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
                 print(f'  note: the router stops when tracks exist on {", ".join(above_)} ({rerrs[0][:90]}); no tracks are '
                       'built on the layers above the signal range')
                 c['skip_tracks'], rerrs = sk, []
+    c['router'] = 'builtin' if router == 'builtin' else 'openroad'
+    if rerrs and router == 'auto':   # OpenROAD's router rejects the full design: the built-in router, full design
+        print(f'  note: the OpenROAD detailed router rejects this design ({rerrs[0][:100]}); reroutes use the built-in '
+              'router (flow/lib/router.py), on the full design')
+        c['router'], rerrs = 'builtin', []
     if rerrs:   # keep running: the least destructive reduced copy the router accepts (lib/reduce.py)
         from . import reduce as Rd
         lf, df, applied, left = Rd.repair(c, rerrs)
