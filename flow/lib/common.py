@@ -200,6 +200,10 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     if not lefs:
         raise StageError('give the LEF files after the DEF: python flow/run.py A.def B.lef (files or folders)')
     lef_paths = lef_files(lefs)
+    from . import preflight   # OpenROAD reads the LEFs once; vias / via rules it rejects are left out of copies
+    lef_paths, pnotes = preflight.fix_lefs(lef_paths)
+    for n in pnotes:
+        print(f'  note: {n}')
     rl = lef_routing_layers(lef_paths)
     if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
         sig = [l for l in rl[1:] if not l.lower().startswith('top')]   # IHP TopMetal1/2: thick power metals
@@ -225,6 +229,11 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         c['fixed_nets'] = fixed
     for n in notes:
         print(f'  note: {n}')
+    errs = preflight.check_def(lef_paths, c['def'])
+    if errs:
+        sep = chr(10) + '    '
+        raise StageError(f'OpenROAD cannot read the DEF even after the repairs above. All {len(errs)} error line(s):'
+                         + sep + sep.join(errs[:60]))
     if normalize == 'auto':
         c['normalize'] = 'auto'
     elif normalize and normalize != 'off':

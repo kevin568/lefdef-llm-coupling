@@ -113,6 +113,34 @@ def _fix_via(st, known, rules):
     return (lead + '- ' + name + ' ' + ' '.join('+ RECT %s ( %d %d ) ( %d %d )' % r for r in rects) + ' ;\n')
 
 
+def _via_tokens(tail):
+    """via names used in a NETS / SPECIALNETS wiring text"""
+    tk = TOK.findall(tail); out = []; i = 0; routing = False
+    while i < len(tk):
+        x = tk[i]
+        if x == '+':
+            kw = tk[i + 1] if i + 1 < len(tk) else ''
+            if kw in ('ROUTED', 'FIXED', 'COVER', 'NOSHIELD'):
+                routing = True; i += 3; continue
+            if routing and kw in ('SHAPE', 'MASK'):
+                i += 3; continue
+            routing = False; i += 2; continue
+        if not routing:
+            i += 1; continue
+        if x == 'NEW':
+            i += 2; continue
+        if x == '(':
+            i = tk.index(')', i) + 1 if ')' in tk[i:] else len(tk); continue
+        if x in ('RECT', 'VIRTUAL'):
+            i = tk.index(')', i) + 1 if ')' in tk[i:] else len(tk); continue
+        if x in ('MASK', 'STYLE', 'TAPERRULE'):
+            i += 2; continue
+        if x in ('TAPER', 'N', 'S', 'E', 'W', 'FN', 'FS', 'FE', 'FW', ';') or re.match(r'^-?\d+$', x):
+            i += 1; continue
+        out.append(x); i += 1
+    return out
+
+
 def _fix_wiring(st, known, dropped_vias):
     """remove path pieces on unknown layers and uses of dropped vias from a NETS / SPECIALNETS statement"""
     k = st.find('+')
@@ -149,7 +177,7 @@ def sanitize(def_path, lefs):
     macros, known, rules, lef_vias = lef_info(lefs)
     text = Path(def_path).read_text(errors='replace')
     notes, fixed = [], set()
-    removed, dropped_vias, fixed_vias, bad_layers = set(), set(), [], set()
+    removed, dropped_vias, fixed_vias, bad_layers, undefined_vias = set(), set(), [], set(), set()
 
     def rewrite(name, fn):
         nonlocal text
@@ -195,15 +223,79 @@ def sanitize(def_path, lefs):
                 return mm.group(0)
             head = re.sub(r'\(\s*(\S+)\s+\S+\s*\)', drop, head)
             bad = [l for l in re.findall(r'(?:ROUTED|FIXED|COVER|NOSHIELD|NEW)\s+(\S+)', tail) if l not in known]
-            uses_dropped = bool(dropped_vias) and any(v in dropped_vias for v in tail.split())
-            if not bad and not uses_dropped:
+            undef = {v for v in _via_tokens(tail) if v not in known_vias}
+            if not bad and not undef:
                 return head + tail   # untouched
             bad_layers.update(bad)   # such nets stay reroutable: their cells' pins are in the LEF
-            return head + _fix_wiring(tail, known, dropped_vias)
+            undefined_vias.update(undef)
+            return head + _fix_wiring(tail, known, undef)
         return fn
+
+    other_fixes = []
+
+    def pin(st):   # PINS: shapes / vias on layers or vias the LEF does not define
+        if not st.strip().startswith('-'):
+            return st
+        pt = r'\(\s*-?\d+\s+-?\d+\s*\)'
+        opt = r'(?:\s+(?:MASK|SPACING|DESIGNRULEWIDTH)\s+\d+)*'
+        def gone(kind, name):
+            ok = name in known if kind != 'VIA' else name in known_vias_pre
+            if not ok:
+                other_fixes.append('pin shape on ' + name)
+            return not ok
+        st = re.sub(r'\+\s*LAYER\s+(\S+)' + opt + r'\s*' + pt + r'\s*' + pt,
+                    lambda m: '' if gone('LAYER', m.group(1)) else m.group(0), st)
+        st = re.sub(r'\+\s*POLYGON\s+(\S+)' + opt + r'((?:\s*' + pt + r')+)',
+                    lambda m: '' if gone('POLYGON', m.group(1)) else m.group(0), st)
+        st = re.sub(r'\+\s*VIA\s+(\S+)(?:\s+MASK\s+\d+)?\s*' + pt,
+                    lambda m: '' if gone('VIA', m.group(1)) else m.group(0), st)
+        return st
+
+    def layer_stmt(st):   # BLOCKAGES / FILLS: '- LAYER name ...' or '- VIA name ...' statements
+        f = st.split()
+        if len(f) >= 3 and f[0] == '-' and ((f[1] == 'LAYER' and f[2] not in known) or
+                                            (f[1] == 'VIA' and f[2] not in known_vias_pre)):
+            other_fixes.append(f[1].lower() + ' ' + f[2]); return None
+        return st
+
+    def group(st):   # GROUPS: components that were left out
+        if not removed or not st.strip().startswith('-'):
+            return st
+        k = st.find('+')
+        head, tail = (st[:k], st[k:]) if k >= 0 else (st, '')
+        f = head.split()
+        keep = f[:2] + [x for x in f[2:] if x not in removed]
+        return ('    ' + ' '.join(keep) + ' ' + tail) if len(keep) != len(f) else st
+
+    def ndr(st):   # NONDEFAULTRULES: layers / vias / via rules the LEF does not define
+        if not st.strip().startswith('-'):
+            return st
+        st = re.sub(r'\+\s*LAYER\s+(\S+)((?:\s+(?:WIDTH|DIAGWIDTH|SPACING|WIREEXT)\s+\d+)*)',
+                    lambda m: m.group(0) if m.group(1) in known else '', st)
+        st = re.sub(r'\+\s*VIA\s+(\S+)', lambda m: m.group(0) if m.group(1) in known_vias_pre else '', st)
+        st = re.sub(r'\+\s*VIARULE\s+(\S+)', lambda m: m.group(0) if m.group(1) in rules else '', st)
+        return st
 
     rewrite('COMPONENTS', comp)
     rewrite('VIAS', via)
+    s0 = _section(text, 'VIAS')
+    known_vias_pre = set(lef_vias) | (set(re.findall(r'^\s*-\s+(\S+)', s0[1], re.M)) if s0 else set())
+    rewrite('PINS', pin)
+    rewrite('BLOCKAGES', layer_stmt)
+    rewrite('FILLS', layer_stmt)
+    rewrite('GROUPS', group)
+    rewrite('NONDEFAULTRULES', ndr)
+
+    def tracks(m):   # TRACKS ... LAYER a b ; with layers the LEF does not define
+        layers = m.group(2).split()
+        ok = [l for l in layers if l in known]
+        if len(ok) == len(layers):
+            return m.group(0)
+        other_fixes.append('tracks on ' + ' '.join(sorted(set(layers) - set(ok))))
+        return (m.group(1) + ' '.join(ok) + m.group(3)) if ok else ''
+    text = re.sub(r'^([ \t]*TRACKS\b.*?\bLAYER\s+)([^;\n]+?)(\s*;[^\n]*\n)', tracks, text, flags=re.M)
+    s = _section(text, 'VIAS')
+    known_vias = set(lef_vias) | (set(re.findall(r'^\s*-\s+(\S+)', s[1], re.M)) if s else set())
     rewrite('NETS', conns(True))
     rewrite('SPECIALNETS', conns(False))
     if removed:
@@ -215,6 +307,13 @@ def sanitize(def_path, lefs):
         notes.append(f'{len(fixed_vias) + len(dropped_vias)} via(s) use a via rule or layer the LEF does not define (e.g. '
                      f'{(fixed_vias + sorted(dropped_vias))[0]}): kept as rectangles on the LEF layers'
                      + (f', {len(dropped_vias)} with no LEF layer removed' if dropped_vias else ''))
+    if undefined_vias - dropped_vias:
+        u = sorted(undefined_vias - dropped_vias)
+        notes.append(f'{len(u)} via name(s) used in the wiring are defined in no usable LEF or DEF ({", ".join(u[:6])}'
+                     f'{" ..." if len(u) > 6 else ""}): left out of the wiring')
+    if other_fixes:
+        notes.append(f'{len(other_fixes)} other item(s) on layers / vias the LEF does not define are left out '
+                     f'(e.g. {", ".join(sorted(set(other_fixes))[:4])})')
     if bad_layers:
         notes.append(f'wiring on layer(s) the LEF does not define ({", ".join(sorted(bad_layers)[:4])}) is left out')
     if not notes:
