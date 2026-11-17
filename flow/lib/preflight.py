@@ -155,6 +155,9 @@ def unmark_mimcap(lefs):
                   'their vias, so the technology LEF copy drops the MIMCAP mark (no signal routing on them)']
 
 
+LAST_PROBE_LOG = None
+
+
 def router_probe(lefs, def_in, layers, skip_tracks=(), route_net=''):
     """Run the reroute script once with an empty guide (nothing is rerouted): the detailed router reads the whole
     technology and does pin access for every cell, which is where it stops on what it cannot use. -> error lines.
@@ -164,6 +167,8 @@ def router_probe(lefs, def_in, layers, skip_tracks=(), route_net=''):
     d.mkdir(parents=True, exist_ok=True)
     (d / 'empty.guide').write_text('')
     log = d / 'route.log'
+    global LAST_PROBE_LOG
+    LAST_PROBE_LOG = log   # tools/diagnose.py prints what the router logged last
     try:
         C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(map(str, lefs)), STATE_DEF=def_in, OUT_DEF=d / 'out.def',
                        LAYERS=layers, TARGETS='{' + route_net + '}' if route_net else '',

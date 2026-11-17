@@ -138,13 +138,29 @@ def c_tech(tech, top):
         if bad:
             unknown.append(f'{m.group(1)} {m.group(2)} uses layer(s) not defined in this LEF: {", ".join(bad)}')
     rl = C.lef_routing_layers([tech])
+    ab = dict(ROUTING='R', CUT='cut', MASTERSLICE='dev', OVERLAP='ovl', IMPLANT='imp')
+    stack = []
+    for name, body in layer_blocks(t):
+        typ = val(body, 'TYPE')
+        if typ:
+            stack.append(f'{name}({ab.get(typ, typ)}' + (',MIM' if re.search(r'MIMCAP', body) else '')
+                         + (',nopitch' if typ == 'ROUTING' and not val(body, 'PITCH') else '') + ')')
+    # which vias / via rules each cut layer has (bottom / cut / top as written in the LEF)
+    bycut = {}
+    for m in re.finditer(r'^\s*(VIA|VIARULE)\s+(\S+)[^\n]*\n(.*?)^\s*END\s+\2\s*$', t, re.M | re.S):
+        lays = re.findall(r'^\s*LAYER\s+(\S+)\s*;', m.group(3), re.M)
+        cut = [l for l in lays if l in names and val(dict(layer_blocks(t)).get(l, ''), 'TYPE') == 'CUT']
+        bycut.setdefault(cut[0] if cut else '(no cut)', []).append(f'{m.group(2)}[{"/".join(lays)}]')
+    vialines = [f'{c}: {len(v)} via(s), e.g. ' + ', '.join(v[:3]) for c, v in bycut.items()]
     det = [f'units {units or "?"} DBU/um, manufacturing grid {grid or "?"} um, routing layers {", ".join(rl)}, '
-           f'top signal layer used by the flow: {top}', '--- layers ---'] + rows
+           f'top signal layer used by the flow: {top}', 'layer stack (LEF order): ' + ' '.join(stack),
+           '--- vias per cut layer ---'] + vialines + ['--- layers ---'] + rows
     if issues:
         det += ['--- layer issues ---'] + issues
     if unknown:
         det += [f'--- {len(unknown)} via / via rule(s) on undefined (device) layers (flow leaves them out) ---'] + unknown[:40]
-    return dict(status='WARN' if issues or unknown else 'OK', details=det, key=issues + unknown[:4],
+    return dict(status='WARN' if issues or unknown else 'OK', details=det,
+                key=['layer stack: ' + ' '.join(stack)] + vialines[:20] + issues + unknown[:6],
                 summary=f'{len(rl)} routing layers, {len(issues)} layer issue(s), {len(unknown)} via(s) on undefined layers')
 
 
@@ -201,8 +217,21 @@ def c_def(def_path, lefs, top):
     det.append('cell types used: ' + ', '.join(f'{m} x{masters.count(m)}' for m in sorted(set(masters))))
     if miss:
         issues.append(f'{len(miss)} cell type(s) not defined in the LEF files: {", ".join(miss[:8])} (flow leaves them out)')
+    # every DEF-defined via with its layers, and how often the wiring uses it
+    wiring = nets + section(t, 'SPECIALNETS')
+    for vm in re.finditer(r'^\s*-\s+(\S+)(.*?);', section(t, 'VIAS'), re.M | re.S):
+        lays = re.findall(r'\+\s*(?:RECT|POLYGON)\s+(\S+)', vm.group(2))
+        rl_ = re.search(r'\+\s*VIARULE\s+(\S+).*?\+\s*LAYERS\s+(\S+)\s+(\S+)\s+(\S+)', vm.group(2), re.S)
+        desc = (f'rule {rl_.group(1)} {rl_.group(2)}/{rl_.group(3)}/{rl_.group(4)}' if rl_ else
+                'rects ' + '/'.join(dict.fromkeys(lays)))
+        uses = len(re.findall(r'(?<=\s)' + re.escape(vm.group(1)) + r'(?=[\s;])', wiring))
+        det.append(f'DEF via {vm.group(1)[:60]}: {desc}, used {uses}x')
+    # which layers the wiring is on (NETS / SPECIALNETS)
+    for sname in ('NETS', 'SPECIALNETS'):
+        lays = re.findall(r'\b(?:ROUTED|FIXED|COVER|NEW)\s+([^\s+();]+)', section(t, sname))
+        det.append(f'{sname} wiring layers: ' + ', '.join(f'{l} x{lays.count(l)}' for l in sorted(set(lays))))
     return dict(status='WARN' if issues else 'OK', details=det + (['--- issues (repaired by the flow) ---'] + issues if issues else []),
-                key=issues, summary=f'{len(stm)} nets ({len(sig)} wired signal), {len(masters)} instances, {len(issues)} item(s) the flow repairs')
+                key=det + issues, summary=f'{len(stm)} nets ({len(sig)} wired signal), {len(masters)} instances, {len(issues)} item(s) the flow repairs')
 
 
 @check('5 cell pins the router can reach')
@@ -294,20 +323,41 @@ def c_route(case, d, n_nets, geo):
             det.append(f'OK   {n} ({len(geo["nets"][n]["pins"])} pins) {time.time() - t0:.0f}s, DRC markers {drc}'); ok += 1
         except Exception:   # noqa: BLE001
             det.append(f'FAIL {n} ({len(geo["nets"][n]["pins"])} pins) {time.time() - t0:.0f}s, log {log}')
-    errs, ctx = [], []
-    for lg in logs:
+    errs, ctx, tail = [], [], []
+    for j, lg in enumerate(logs):
         if lg.exists():
             lines = lg.read_text(errors='replace').splitlines()
-            errs += [l for l in lines if re.search(r'\[ERROR|^ERROR|^Error', l.strip()) and 'GRT-0253' not in l]
-            if not ctx:
+            le = [l for l in lines if re.search(r'\[ERROR|^ERROR|^Error', l.strip()) and 'GRT-0253' not in l]
+            errs += le
+            if le and not ctx:
                 ctx = context(lines)
+                tail = [f'--- raw end of the first failing router log ({lg}) ---'] + rawtail(lines)
     if errs:
         det += ['--- router error lines ---'] + distinct(errs)
     if ctx and ok < len(picks):
         det += ['--- what the router was doing just before the error (first failing log) ---'] + ctx
     return dict(status='OK' if ok == len(picks) else 'FAIL' if ok == 0 else 'WARN', details=det,
-                key=det[:len(picks)] + distinct(errs, 8) + (['context before the error:'] + ctx if ctx and ok < len(picks) else []),
+                key=det[:len(picks)] + distinct(errs, 8) + (['context before the error:'] + ctx if ctx and ok < len(picks) else [])
+                + (tail if ok < len(picks) else []),
                 summary=f'{ok}/{len(picks)} reroutes succeeded' + (f'; first error: {errs[0].strip()[:160]}' if errs and ok < len(picks) else ''))
+
+
+NOISE = re.compile(r'ODB-0176|ODB-0388|ODB-0220|LEFPARS|INFO ODB-02[0-9][0-9]|To avoid this warning|^\s*$|^\s*\d+# |'
+                   r'unsupported .* property')
+
+
+def rawtail(lines, n=40):
+    """the end of a router log as written, without the repetitive LEF / ODB notices and stack-trace frames"""
+    return [x.rstrip()[:200] for x in lines if not NOISE.search(x)][-n:]
+
+
+def last_router_line():
+    """the router's last [INFO/WARNING DRT|GRT] line of the latest router probe (where it was when it stopped)"""
+    lg = P.LAST_PROBE_LOG
+    if not lg or not Path(lg).exists():
+        return ''
+    tool = [x.strip() for x in Path(lg).read_text(errors='replace').splitlines() if re.search(r'\[(INFO|WARNING) (DRT|GRT)-', x)]
+    return tool[-1][:140] if tool else '(router logged nothing)'
 
 
 def context(lines, n=10):
@@ -325,11 +375,17 @@ def c_bisect(case):
             if not e.startswith('(no error line')]
     if not base:
         return dict(summary='router probe on the full design passes: nothing to bisect')
+    base_last = last_router_line()
+    base_log = Path(P.LAST_PROBE_LOG) if P.LAST_PROBE_LOG else None
     res = Rd.bisect(case, include_diagnostic=True, base_errs=base)
-    det = [f'full design: {base[0][:150]}']
+    det = [f'full design: {base[0][:150]}', f'   router last logged: {base_last}']
+    if base_log and base_log.exists():
+        det += ['--- raw end of the router probe log on the full design ---'] + rawtail(base_log.read_text(errors='replace').splitlines(), 30)
+    det.append('--- one part left out at a time ---')
     fixes = []
     for k, d, errs, _, _ in res:
-        det.append(f'{"OK  " if not errs else "FAIL"} without {d}' + (f'  -> {errs[0][:110]}' if errs else ''))
+        det.append(f'{"OK  " if not errs else "FAIL"} without {d}' + (f'  -> {errs[0][:110]}' if errs else '')
+                   + (f'  [last: {Rd.LAST_LINES.get(k, "")}]' if errs else ''))
         if not errs:
             fixes.append(d)
     summ = (f'error disappears without: {"; ".join(fixes)}' if fixes else
@@ -347,14 +403,14 @@ def c_bisect(case):
         e = [x for x in P.router_probe(case['lefs'], df, case['layers'], case.get('skip_tracks', []),
                                        route_net='flow_probe_net' if 'flow_probe_net' in t else '')
              if not x.startswith('(no error line')]
-        det.append(f'{"OK  " if not e else "FAIL"} {d}' + (f'  -> {e[0][:110]}' if e else ''))
+        det.append(f'{"OK  " if not e else "FAIL"} {d}' + (f'  -> {e[0][:110]}  [last: {last_router_line()}]' if e else ''))
     rl = C.lef_routing_layers(case['lefs']); top = case['layers'].split('-')[-1]
     above = rl[rl.index(top) + 1:] if top in rl else []
     if above:   # tracks on the layers above the signal range (MT ...) left out
         e = [x for x in P.router_probe(case['lefs'], case['def'], case['layers'],
                                        list(case.get('skip_tracks', [])) + above) if not x.startswith('(no error line')]
         det.append(f'{"OK  " if not e else "FAIL"} full design, no tracks on {", ".join(above)}'
-                   + (f'  -> {e[0][:110]}' if e else ''))
+                   + (f'  -> {e[0][:110]}  [last: {last_router_line()}]' if e else ''))
     if not fixes:   # several causes at once: cumulative reductions (what the flow itself does to keep running)
         _, _, applied, left = Rd.repair(case, base)
         det.append('cumulative: ' + ('router accepts the design without: ' + '; '.join(applied) if not left else
@@ -367,14 +423,15 @@ def c_bisect(case):
 def write_report(d):
     """full detail in report.txt; the terminal gets the key lines of every check that is not OK"""
     nl = chr(10)
-    (d / 'report.txt').write_text((nl + nl).join(f'[{c["status"]}] {c["name"]}: {c["summary"]}' + nl + nl.join(c['details'])
-                                                for c in CHECKS) + nl)
+    text = (nl + nl).join(f'[{c["status"]}] {c["name"]}: {c["summary"]}' + nl + nl.join(c['details']) for c in CHECKS) + nl
+    (d / 'report.txt').write_text(text)
+    (d / time.strftime('report_%Y%m%d_%H%M.txt')).write_text(text)   # every run kept, one file per run
     print(nl + '=' * 30 + ' key lines ' + '=' * 30)
     for c in CHECKS:
-        if c['status'] == 'OK' and not c['name'].startswith(('7', '10')):
+        if c['status'] == 'OK' and not c['name'].startswith(('3', '4', '7', '10')):
             continue
         print(f'[{c["status"]}] {c["name"]}')
-        for l in (c.get('key') or [])[:12]:
+        for l in (c.get('key') or [])[:80]:
             l = l.strip()   # wrapped, not cut: the MIM note carries why the other variants were rejected
             for k in range(0, min(len(l), 900), 150):
                 print(('   ' if k == 0 else '     ') + l[k:k + 150])

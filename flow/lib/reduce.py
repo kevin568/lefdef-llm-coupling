@@ -10,6 +10,17 @@ from . import common as C
 from . import preflight as P
 
 
+LAST_LINES = {}   # reduction key -> the router's last log line in its probe (for the diagnosis)
+
+
+def last_router_line():
+    lg = P.LAST_PROBE_LOG
+    if not lg or not Path(lg).exists():
+        return ''
+    tool = [x.strip() for x in Path(lg).read_text(errors='replace').splitlines() if re.search(r'\[(INFO|WARNING) (DRT|GRT)-', x)]
+    return tool[-1][:140] if tool else '(router logged nothing)'
+
+
 def _section_span(text, name):
     m = re.search(r'^[ \t]*' + name + r'[ \t]+\d+[ \t]*;[^\n]*\n', text, re.M)
     if not m:
@@ -234,6 +245,7 @@ def _bisect(case, include_diagnostic, stop_at_first, base_errs, skip_keys):
         cands.append((k, d, case['lefs'], write_def(case['def'], t, k)))
     for k, d, lf, df in cands:
         errs = [e for e in P.router_probe(lf, df, case['layers'], skip) if not e.startswith('(no error line')]
+        LAST_LINES[k] = last_router_line()
         yield (k, d, errs, lf, df)
         if stop_at_first and not errs:
             return
