@@ -318,7 +318,9 @@ def write_report(d):
             continue
         print(f'[{c["status"]}] {c["name"]}')
         for l in (c.get('key') or [])[:12]:
-            print('   ' + l.strip()[:170])
+            l = l.strip()   # wrapped, not cut: the MIM note carries why the other variants were rejected
+            for k in range(0, min(len(l), 900), 150):
+                print(('   ' if k == 0 else '     ') + l[k:k + 150])
 
 
 def main():

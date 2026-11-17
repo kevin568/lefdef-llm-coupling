@@ -246,7 +246,8 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     best = next((t for t in ok if not t['errs']), None) or min(ok, key=lambda t: len(t['errs']))
     v, c, rerrs = best['v'], best['c'], best['errs']
     if v['mim']:
-        rej = '; '.join(f'"{t["v"]["desc"]}": {t["errs"][0][:90]}' for t in tried if t is not best and t['errs'])
+        rej = '; '.join(f'"{t["v"]["desc"]}": ' + ' | '.join(dict.fromkeys(e[:160] for e in t['errs'][:3]))
+                        for t in tried if t is not best and t['errs'])
         print(f'  note: MIM capacitor layer(s) {", ".join(v["mim"])}: the router accepts "{v["desc"]}" on this design '
               f'(used; no signal routing on them)' + (f'. Rejected: {rej}' if rej else ''))
     print(best['out'], end='')
@@ -254,7 +255,7 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         u = list(dict.fromkeys(re.sub(r'(?<![-\w.])\d+(\.\d+)?\b', '#', e) for e in rerrs))
         sep = chr(10) + '      '
         print(f'  warning: router preflight reports {len(u)} distinct error line(s) the flow could not repair '
-              f'(log: {preflight.CACHE / "router_probe" / "route.log"}); the flow continues:' + sep + sep.join(u[:20]))
+              f'(logs: {preflight.CACHE}/router_probe_*/route.log); the flow continues:' + sep + sep.join(u[:20]))
     if normalize == 'auto':
         c['normalize'] = 'auto'
     elif normalize and normalize != 'off':
@@ -311,7 +312,7 @@ def _setup(name, def_file, lef_paths, layers, rules, pool_nets, mim_layers, skip
     for _ in range(60):
         top = layers.split('-')[-1]
         c['def'], notes, fixed = sanitize_def(src, lef_paths, drop, top,
-                                              rl[rl.index(top) + 1:] if top in rl else ())
+                                              rl[rl.index(top) + 1:] if top in rl else (), skip_tracks)
         errs = preflight.check_def(lef_paths, c['def'])
         if not errs:
             break

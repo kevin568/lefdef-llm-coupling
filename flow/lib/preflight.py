@@ -158,7 +158,7 @@ def unmark_mimcap(lefs):
 def router_probe(lefs, def_in, layers, skip_tracks=()):
     """Run the reroute script once with an empty guide (nothing is rerouted): the detailed router reads the whole
     technology and does pin access for every cell, which is where it stops on what it cannot use. -> error lines"""
-    d = CACHE / 'router_probe'
+    d = CACHE / ('router_probe' + ('_' + '_'.join(skip_tracks) if skip_tracks else '') + '_' + C.sha256(lefs[0])[:6])
     d.mkdir(parents=True, exist_ok=True)
     (d / 'empty.guide').write_text('')
     log = d / 'route.log'

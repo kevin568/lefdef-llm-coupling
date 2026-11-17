@@ -232,10 +232,14 @@ def statement_at(def_path, line_no):
     return ('line', lines[i].strip()) if lines[i].strip() else None
 
 
-def sanitize(def_path, lefs, drop=None, top_layer=None, above=()):
+def sanitize(def_path, lefs, drop=None, top_layer=None, above=(), ignore_layers=()):
     """-> (DEF path to use, notes [str], fixed nets [names]); the same path and no notes when nothing is needed.
-    drop: statement keys / line texts to leave out (what OpenROAD still could not read, see statement_at)."""
+    drop: statement keys / line texts to leave out (what OpenROAD still could not read, see statement_at).
+    ignore_layers: LEF layers the detailed router does not support (MIM capacitor metals kept marked): wiring, pin
+    shapes and via shapes on them are left out like those on layers the LEF does not define (DRT-0107 / map::at)."""
     macros, known, rules, lef_vias = lef_info(lefs)
+    known = known - set(ignore_layers)
+    above = tuple(l for l in above if l not in set(ignore_layers))
     text = Path(def_path).read_text(errors='replace')
     notes, fixed = [], set()
     removed, dropped_vias, fixed_vias, bad_layers, undefined_vias = set(), set(), [], set(), set()
