@@ -218,6 +218,8 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     lef_paths = lef_files(lefs)
     from . import preflight   # OpenROAD reads the LEFs once; vias / via rules it rejects are left out of copies
     lef_paths, pnotes = preflight.fix_lefs(lef_paths)
+    lef_paths, mnotes = preflight.unmark_mimcap(lef_paths)   # MIM cap layers: the detailed router ignores them
+    pnotes += mnotes
     for n in pnotes:
         print(f'  note: {n}')
     rl = lef_routing_layers(lef_paths)
@@ -283,6 +285,16 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         c['fixed_nets'] = fixed
     for n in notes:
         print(f'  note: {n}')
+    # detailed router preflight (seconds): what it rejects in the technology is left out and the probe repeats;
+    # anything left is listed at once here, before the long stages
+    c['lefs'], rnotes, rerrs = preflight.fix_router(c['lefs'], c['def'], c['layers'])
+    for n in rnotes:
+        print(f'  note: {n}')
+    if rerrs:
+        u = list(dict.fromkeys(re.sub(r'(?<![-\w.])\d+(\.\d+)?\b', '#', e) for e in rerrs))
+        sep = chr(10) + '    '
+        raise StageError(f'the detailed router (OpenROAD) stops on this layout; all {len(u)} distinct error line(s) '
+                         f'(log: {preflight.CACHE / "router_probe" / "route.log"}):' + sep + sep.join(u[:30]))
     if normalize == 'auto':
         c['normalize'] = 'auto'
     elif normalize and normalize != 'off':

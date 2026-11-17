@@ -47,6 +47,10 @@ if {[llength $pg_nets] > 0} { puts "FLOW routed [llength $pg_nets] regular POWER
 set_routing_layers -signal $::env(LAYERS)
 if {$::env(MODE) == "guide"} {
   read_guides $::env(GUIDE)
+} elseif {$::env(MODE) == "probe"} {
+  # router preflight: an empty guide, nothing is rerouted; the detailed router still reads the technology and
+  # does pin access for every cell (an empty guide file is itself an error on some technologies: ignored)
+  catch {read_guides $::env(GUIDE)}
 } else {
   global_route -guide_file $::env(GUIDE) -allow_congestion
 }

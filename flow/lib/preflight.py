@@ -113,3 +113,79 @@ def check_def(lefs, def_in):
     if any(l.startswith('FLOW_DEF_FAIL') for l in log.splitlines()) or 'DEF parser returns an error' in log:
         return _errors(log)
     return None
+
+
+# ---------------------------------------------------------------- detailed router (TritonRoute) preflight
+def _tech_copy(path, text, tag):
+    new = CACHE / C.sha256(path)[:16] / (Path(path).stem + '.' + tag + '.lef')
+    new.parent.mkdir(parents=True, exist_ok=True)
+    new.write_text(text)
+    return str(new)
+
+
+def _vias_on_layers(text, layers):
+    """names of the VIA / VIARULE blocks that use one of these layers"""
+    out = set()
+    for m in re.finditer(r'^\s*(VIA|VIARULE)\s+(\S+)[^\n]*\n(.*?)^\s*END\s+(\S+)\s*$', text, re.M | re.S):
+        if m.group(4) == m.group(2) and any(re.search(r'^\s*LAYER\s+' + re.escape(l) + r'\s*;', m.group(3), re.M)
+                                             for l in layers):
+            out.add(m.group(2))
+    return out
+
+
+def unmark_mimcap(lefs):
+    """The detailed router ignores LEF58_TYPE MIMCAP layers (e.g. a MIM capacitor top metal) and then stops on every
+    via / via rule that uses one (DRT-0129 "Unknown layer CMT for viarule MT_CMT"); leaving those vias out instead
+    leaves their cut layer without vias (DRT-0233). So a copy of the technology LEF drops only the MIMCAP mark: the
+    layer is an ordinary metal layer for the router (signal routing still stops below it). -> (lefs, notes)"""
+    lefs = [str(l) for l in lefs]
+    text = Path(lefs[0]).read_text(errors='replace')
+    mim = []
+
+    def unmark(m):
+        body = re.sub(r'^[ \t]*PROPERTY[ \t]+LEF58_TYPE[ \t]+"[^"]*\bMIMCAP\b[^"]*"[ \t]*;[ \t]*\r?\n', '', m.group(2), flags=re.M)
+        if body != m.group(2):
+            mim.append(m.group(1))
+        return m.group(0).replace(m.group(2), body, 1)
+    new = re.sub(r'^[ \t]*LAYER[ \t]+(\S+)[ \t]*\r?\n(.*?)^[ \t]*END[ \t]+\1\b', unmark, text, flags=re.M | re.S)
+    if not mim:
+        return lefs, []
+    lefs[0] = _tech_copy(lefs[0], new, 'router')
+    return lefs, [f'MIM capacitor layer(s) {", ".join(mim)}: the detailed router ignores such layers and stops on '
+                  'their vias, so the technology LEF copy drops the MIMCAP mark (no signal routing on them)']
+
+
+def router_probe(lefs, def_in, layers):
+    """Run the reroute script once with an empty guide (nothing is rerouted): the detailed router reads the whole
+    technology and does pin access for every cell, which is where it stops on what it cannot use. -> error lines"""
+    d = CACHE / 'router_probe'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'empty.guide').write_text('')
+    log = d / 'route.log'
+    try:
+        C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(map(str, lefs)), STATE_DEF=def_in, OUT_DEF=d / 'out.def',
+                       LAYERS=layers, TARGETS='', MODE='probe', GUIDE=d / 'empty.guide', DRC=d / 'drc.rpt'), log, timeout=3600)
+        return []
+    except C.StageError:
+        return _errors(log.read_text(errors='replace')) or ['(no error line: see ' + str(log) + ')']
+
+
+def fix_router(lefs, def_in, layers):
+    """Probe the detailed router; vias / via rules it rejects (DRT-0129 unknown layer) are left out of a copy of the
+    technology LEF, together with every other via on that layer, and the probe repeats (at most 8 rounds).
+    -> (lefs, notes, remaining error lines or [])"""
+    lefs = [str(l) for l in lefs]; removed = set(); errs = []
+    for _ in range(8):
+        errs = router_probe(lefs, def_in, layers)
+        if not errs:
+            break
+        text = Path(lefs[0]).read_text(errors='replace')
+        bad = re.findall(r'Unknown layer (\S+) for (?:viarule|via|VIA|VIARULE) (\S+?)\.?\s*$', '\n'.join(errs), re.M)
+        names = ({v for _, v in bad} | _vias_on_layers(text, {l for l, _ in bad})) - removed
+        if not names:
+            break
+        removed |= names
+        lefs[0] = _tech_copy(lefs[0], _strip(text, names, names), 'router')
+    notes = [f'the detailed router rejects {len(removed)} via / via rule(s) ({", ".join(sorted(removed)[:4])}'
+             f'{" ..." if len(removed) > 4 else ""}): left out of the technology LEF copy'] if removed else []
+    return lefs, notes, errs
