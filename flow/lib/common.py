@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -69,7 +70,9 @@ def check_lef_def(case):
     missing = sorted(used - macros)
     if missing:
         raise StageError(f'{len(missing)} cell/macro type(s) used in the DEF are not defined in the LEF files, e.g. '
-                         f'{", ".join(missing[:8])}. Add the LEF that defines them to --lef.')
+                         f'{", ".join(missing[:8])}. Add the LEF file(s) that define them after the technology LEF '
+                         f'(A.def tech.lef cells.lef ...). To find them: grep -rl "MACRO {missing[0]}" <folder> '
+                         f'--include="*.lef"')
     lef_rules = set()
     for l in case['lefs']:
         lef_rules |= set(re.findall(r'^\s*VIARULE\s+(\S+)', Path(l).read_text(errors='replace'), re.M | re.I))
@@ -117,7 +120,7 @@ def plain_file(p):
 
 def lef_files(items):
     """LEF paths from files, folders (every *.lef / *.lef.gz inside) or comma-separated lists; technology LEF first."""
-    paths = []
+    paths, explicit = [], set()
     for it in items:
         for s in str(it).split(','):
             if not s:
@@ -129,21 +132,67 @@ def lef_files(items):
                     raise StageError(f'no *.lef or *.lef.gz file in folder {p}')
                 paths += found
             elif p.exists():
-                paths.append(p)
+                paths.append(p); explicit.add(str(plain_file(p)))
             else:
                 raise StageError(f'missing input file {p}')
     paths = list(dict.fromkeys(str(plain_file(p)) for p in paths))
     # the technology LEF (routing LAYER definitions) must be read first; keep the given order otherwise
     tech = [p for p in paths if lef_routing_layers([p])]
     if len(tech) > 1:
-        names = [Path(p).name for p in tech]
-        raise StageError(f'{len(tech)} technology LEFs (with routing LAYER definitions) were given, e.g. '
-                         f'{", ".join(names[:4])}{" and others" if len(names) > 4 else ""}. Give only the one for this layout '
-                         '(e.g. one *_tech.lef plus its cell LEF) instead of the whole folder.')
+        # several LEFs define routing layers (e.g. tech.lef plus a merged tech+cell LEF): one is used as the technology
+        # LEF (a file named *tech*, else the first named file); the other named ones contribute only their MACRO/SITE
+        # definitions; technology LEFs that only came from folders are skipped
+        named = [p for p in tech if p in explicit] or tech
+        pick = ([p for p in named if 'tech' in Path(p).name.lower()] or named)[:1][0]
+        keep_sites = set(re.findall(r'^\s*SITE\s+(\S+)\s*$', Path(pick).read_text(errors='replace'), re.M))
+        notes = []
+        for p in tech:
+            if p == pick:
+                continue
+            i = paths.index(p)
+            if p in explicit:
+                cells = cells_only_lef(p, keep_sites)
+                paths[i] = cells
+                notes.append(f'{Path(p).name}: its cell definitions only' if cells else f'{Path(p).name}: no cells, skipped')
+            else:
+                paths[i] = None; notes.append(f'{Path(p).name} (folder): skipped')
+        paths = [p for p in paths if p]
+        print(f'  note: {len(tech)} LEFs define routing layers; technology LEF = {Path(pick).name}; '
+              + '; '.join(notes[:4]) + (' ...' if len(notes) > 4 else ''))
+        tech = [pick]
     return tech + [p for p in paths if p not in tech]
 
 
+def cells_only_lef(path, skip_sites=()):
+    """Copy of a LEF with only its MACRO (and new SITE) blocks, in out/.cache/; None if it has no MACRO."""
+    lines = Path(path).read_text(errors='replace').splitlines()
+    keep, i = [], 0
+    while i < len(lines):
+        m = re.match(r'^\s*(MACRO|SITE)\s+(\S+)\s*$', lines[i])
+        if m:
+            j = i + 1
+            end = re.compile(r'^\s*END\s+' + re.escape(m.group(2)) + r'\s*$')
+            while j < len(lines) and not end.match(lines[j]):
+                j += 1
+            if m.group(1) == 'MACRO' or m.group(2) not in skip_sites:
+                keep += lines[i:j + 1]
+            i = j + 1
+            continue
+        if re.match(r'^\s*(VERSION|BUSBITCHARS|DIVIDERCHAR)\b', lines[i]):
+            keep.append(lines[i])
+        i += 1
+    if not any(re.match(r'^\s*MACRO\s', l) for l in keep):
+        return None
+    out = Path(os.environ.get('LEFDEF_CACHE') or REPO / 'out' / '.cache') / sha256(path)[:16] / (Path(path).stem + '.cells.lef')
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text('\n'.join(keep + ['END LIBRARY']) + '\n')
+    return str(out)
+
+
 SKY130_LAYERS = {'li1', 'met1', 'met2', 'met3', 'met4', 'met5'}
+
+
+from .defcells import missing_masters, def_without_masters  # noqa: E402
 
 
 def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', strict=False):
@@ -170,6 +219,14 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     if not Path(def_file).expanduser().exists():
         raise StageError(f'missing input file {Path(def_file).expanduser().resolve()}')
     c['def'] = str(plain_file(Path(def_file).expanduser().resolve()))
+    missing = missing_masters(c['def'], lef_paths)
+    if missing:   # cells without a LEF: left out of a DEF copy; nets that touch them are kept as they are (not rerouted)
+        c['def'], n_rm, fixed = def_without_masters(c['def'], set(missing))
+        c['fixed_nets'] = fixed
+        print(f'  note: {len(missing)} cell type(s) used in the DEF have no LEF definition ({", ".join(missing[:6])}'
+              f'{" ..." if len(missing) > 6 else ""}): their {n_rm} instance(s) are left out of a copy of the DEF; '
+              f'the {len(fixed)} net(s) touching them keep their wiring (counted as neighbours) but are not rerouted. '
+              'Give the LEF that defines them to include them.')
     if normalize == 'auto':
         c['normalize'] = 'auto'
     elif normalize and normalize != 'off':

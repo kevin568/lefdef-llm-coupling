@@ -95,9 +95,15 @@ def pm_nets(geo):
             for n, v in geo['nets'].items() if v['signal_type'] in C.SIG}
 
 
+def fixed_nets(case):
+    return {x.replace(chr(92), '') for x in case.get('fixed_nets', [])}
+
+
 def net_ok(case, geo, n):
     v = geo['nets'][n]
     if v['signal_type'] not in C.SIG or not v['routed'] or not (2 <= len(v['pins']) <= 8):
+        return False
+    if n.replace(chr(92), '') in fixed_nets(case):   # touches a cell without a LEF: kept as it is
         return False
     if case.get('net_regex') and not re.search(case['net_regex'], n):
         return False
@@ -159,6 +165,8 @@ def auto_normalize(case, d, base_def, st):
     sig = [n for n, t in ref.items() if 'ROUTED' in t and not re.search(r'USE\s+(POWER|GROUND)', t)]
     rx = case.get('net_regex')
     cc = spef.read(d / 'input.spef')['listed_cc']
+    fx = fixed_nets(case)
+    sig = [n for n in sig if n.replace(chr(92), '') not in fx]
     pool = sorted((n for n in sig if 2 <= conns[n] <= 8 and (not rx or re.search(rx, n))),
                   key=lambda n: (-cc.get(n, 0.), n))[:case.get('pool_nets', 20)]
     two_pin = [n for n in sig if conns[n] == 2 and n not in pool and not (rx and re.search(rx, n))]
@@ -244,7 +252,9 @@ def s2_candidates(case, out, st):
     base_def = b / 'base.def'
     eligible = [n for n in geo['nets'] if net_ok(case, geo, n)]
     if not eligible:
-        raise C.StageError('no eligible net (signal, routed, 2..8 pins, case filter)')
+        raise C.StageError('no eligible net (signal, routed, 2..8 pins, case filter'
+                           + (f'; {len(case["fixed_nets"])} nets touch cells without a LEF and are kept as they are: '
+                              'give the LEF that defines those cells' if case.get('fixed_nets') else '') + ')')
     nets = sorted(eligible, key=lambda n: (-sp['listed_cc'].get(n, 0.), n))[:case.get('pool_nets', 20)]
     # pin access: OpenROAD's own reroute of each pool net (its global-route guide gives the pin-access gcells;
     # the same run is also the "default" (router's choice) candidate of that net)
