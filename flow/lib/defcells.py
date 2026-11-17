@@ -37,6 +37,18 @@ def lef_info(lefs):
     return macros, layers, rules, vias
 
 
+def macro_pins(lefs):
+    """{macro: set of its PIN names}"""
+    out = {}
+    for l in lefs:
+        t = Path(l).read_text(errors='replace')
+        for m in re.finditer(r'^\s*MACRO\s+(\S+)\s*$', t, re.M):
+            e = re.search(r'^\s*END\s+' + re.escape(m.group(1)) + r'\s*$', t[m.end():], re.M)
+            body = t[m.end():m.end() + e.start()] if e else t[m.end():]
+            out.setdefault(m.group(1), set()).update(re.findall(r'^\s*PIN\s+(\S+)', body, re.M))
+    return out
+
+
 def lef_macros(lefs):
     return lef_info(lefs)[0]
 
@@ -227,6 +239,10 @@ def sanitize(def_path, lefs, drop=None):
     left_out, dups = [], []
     drop_lines = {x[1] for x in drop if x[0] == 'line'}
     drop_names = {x[1] for x in drop if x[0] == 'name'}
+    drop_conns = {(x[1], x[2]) for x in drop if x[0] == 'conn'}
+    mpins, no_pin = macro_pins(lefs), []
+    s_comp = _section(text, 'COMPONENTS')
+    master = dict(re.findall(r'^\s*-\s+(\S+)\s+(\S+)', s_comp[1], re.M)) if s_comp else {}
     if drop_lines:
         text = ''.join(l for l in text.splitlines(True) if l.strip() not in drop_lines)
         left_out += sorted(drop_lines)
@@ -294,12 +310,17 @@ def sanitize(def_path, lefs, drop=None):
             net = st.split()[1]
 
             def drop(mm):
-                if mm.group(1) in removed:
+                inst, pin = mm.group(1), mm.group(2)
+                if inst in removed:
                     if track:
                         fixed.add(net)
                     return ''
+                pins = mpins.get(master.get(inst))
+                if (inst, pin) in drop_conns or (pins is not None and pin not in pins):
+                    no_pin.append((inst, pin))   # a pin the cell's LEF does not have (e.g. bulk B): connection left out
+                    return ''
                 return mm.group(0)
-            head = re.sub(r'\(\s*(\S+)\s+\S+\s*\)', drop, head)
+            head = re.sub(r'\(\s*(\S+)\s+(\S+)\s*\)', drop, head)
             bad = [l for l in re.findall(r'\b(?:ROUTED|FIXED|COVER|NOSHIELD|NEW)\s+([^\s+();]+)', tail)
                    if l not in known and not re.match(r'^-?\d+$', l)]
             undef = {v for v in _via_tokens(tail) if v not in known_vias}
@@ -397,6 +418,9 @@ def sanitize(def_path, lefs, drop=None):
                      f'(e.g. {", ".join(sorted(set(other_fixes))[:4])})')
     if bad_layers:
         notes.append(f'wiring on layer(s) the LEF does not define ({", ".join(sorted(bad_layers)[:4])}) is left out')
+    if no_pin:
+        notes.append(f'{len(no_pin)} connection(s) to pins the cell LEF does not define are left out (e.g. '
+                     f'{" ".join("%s/%s" % x for x in no_pin[:3])}; usually the transistor bulk pin)')
     if dups:
         notes.append(f'{len(dups)} repeated definition(s) of a name are left out, the first kept (e.g. {dups[0]})')
     if left_out:

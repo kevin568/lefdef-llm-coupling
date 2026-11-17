@@ -235,7 +235,8 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         where = [statement_at(c['def'], int(m.group(1))) for l in errs for m in [re.search(r'\bat line (\d+)', l)] if m]
         if not where:   # no line number: leave out what the error names, e.g. "undefined NONDEFAULTRULE (X)"
             where = [('name', n) for l in errs if 'DEF parser returns' not in l
-                     for n in re.findall(r'\(([^()\s]+)\)', l)]
+                     for n in re.findall(r'\(([^()\s,]+)\)', l)]
+            where += [('conn', a, b) for l in errs for a, b in re.findall(r'\(\s*([^()\s,]+)\s*,\s*([^()\s,]+)\s*\)', l)]
         new = [w for w in where if w and w not in drop]
         if not new:
             for n in notes:
