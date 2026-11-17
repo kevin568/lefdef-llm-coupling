@@ -108,7 +108,7 @@ With `--route all` all 192 trees are valid and 112 of them improve U.
 - Linux (or WSL2). OpenROAD with Python (`odb`) support. Tested with OpenROAD `26Q2-1164-g08f67ee5ec` and with the
   conda build `2.0-12381` (Feb 2024). Stage `s0_check` verifies the commands the flow needs.
 - **No OpenROAD, no root, older Linux** (e.g. RHEL/Rocky 8, glibc 2.28, no Docker): `bash tools/install_openroad_conda.sh`
-  puts OpenROAD and the flow's Python into `local-tools/` inside this folder (about 1.6 GB, 3 GB while installing;
+  puts OpenROAD and the flow's Python into `local-tools/` inside this folder (about 1.9 GB, 3 GB while installing;
   downloads only, conda-forge + litex-hub, no Anaconda "defaults" channel). Nothing is written outside this folder:
   conda's cache, temporary files and home-directory files are redirected into `local-tools/`, which `.gitignore`
   keeps out of `git pull`. Then `source local-tools/env.sh` (each new terminal) and run with `--policy heuristic`. Every library

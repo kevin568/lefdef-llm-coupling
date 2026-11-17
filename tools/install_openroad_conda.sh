@@ -6,7 +6,7 @@
 #   source local-tools/env.sh                       # each new terminal; then: python flow/run.py A.def B.lef --policy heuristic
 #
 # Nothing is written outside FOLDER: conda's package cache, temporary files, its config and its home-directory
-# files (~/.conda, ~/.condarc, ~/.cache) are all redirected into FOLDER. About 3 GB while installing, 1.6 GB after.
+# files (~/.conda, ~/.condarc, ~/.cache) are all redirected into FOLDER. About 3 GB while installing, 1.9 GB after.
 # local-tools/ is in .gitignore, so `git pull` does not touch it. Running the script again resumes or repairs.
 #
 # Downloads only (nothing is uploaded): Miniforge (conda-forge's installer, github.com/conda-forge/miniforge),
