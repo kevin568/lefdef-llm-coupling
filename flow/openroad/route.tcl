@@ -4,10 +4,25 @@ foreach l $::env(LEFS) { read_lef $l }
 read_def $::env(STATE_DEF)
 set block [ord::get_db_block]
 # DEFs written without TRACKS (e.g. some test DEFs): build the missing track grids from the LEF pitches
+# (a layer without PITCH, e.g. a MIM capacitor metal: width + spacing, else the pitch of the layer below)
+set last_pitch 0
 foreach layer [[ord::get_db_tech] getLayers] {
-  if {[$layer getType] == "ROUTING" && [$block findTrackGrid $layer] == "NULL"} {
-    make_tracks [$layer getName]
-    puts "FLOW made tracks for [$layer getName] from the LEF pitch"
+  if {[$layer getType] != "ROUTING"} { continue }
+  set lp [$layer getPitch]
+  if {$lp > 0} { set last_pitch $lp }
+  if {[$block findTrackGrid $layer] != "NULL"} { continue }
+  set name [$layer getName]
+  if {$lp > 0 && ![catch {make_tracks $name}]} {
+    puts "FLOW made tracks for $name from the LEF pitch"
+    continue
+  }
+  set p [expr {[$layer getWidth] + [$layer getSpacing]}]
+  if {$p <= [$layer getWidth]} { set p $last_pitch }
+  set pu [expr {double($p) / [$block getDbUnitsPerMicron]}]
+  if {$p > 0 && ![catch {make_tracks $name -x_pitch $pu -y_pitch $pu -x_offset 0 -y_offset 0}]} {
+    puts "FLOW made tracks for $name with pitch $pu um (no LEF pitch)"
+  } else {
+    puts "FLOW no tracks for $name (no LEF pitch, width or spacing)"
   }
 }
 set n_ripped 0

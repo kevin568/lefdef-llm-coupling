@@ -56,6 +56,22 @@ def lef_routing_layers(lefs):
     return out
 
 
+def lef_pitchless_layers(lefs):
+    """routing layers whose LEF definition has no (non-zero) PITCH, e.g. a MIM capacitor top metal"""
+    import re
+    out = set()
+    for l in lefs:
+        t = Path(l).read_text(errors='replace')
+        for m in re.finditer(r'^[ \t]*LAYER[ \t]+([^\s;]+)[ \t]*\r?$', t, re.M):
+            end = re.compile(r'^[ \t]*END[ \t]+' + re.escape(m.group(1)) + r'\b', re.M).search(t, m.end())
+            body = t[m.end():end.start()] if end else ''
+            if re.search(r'^\s*TYPE\s+ROUTING\b', body, re.M):
+                p = re.search(r'^\s*PITCH\s+([\d.]+)', body, re.M)
+                if not p or float(p.group(1)) <= 0:
+                    out.add(m.group(1))
+    return out
+
+
 def check_lef_def(case):
     """Fail early, with a plain message, when the LEFs lack technology layers or masters used by the DEF."""
     import re
@@ -207,6 +223,12 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     rl = lef_routing_layers(lef_paths)
     if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
         sig = [l for l in rl[1:] if not l.lower().startswith('top')]   # IHP TopMetal1/2: thick power metals
+        nop = lef_pitchless_layers(lef_paths)
+        if any(l in nop for l in sig):   # a layer without PITCH (e.g. a MIM cap metal): signal layers stop below it
+            k = next(i for i, l in enumerate(sig) if l in nop)
+            print(f'  note: routing layer(s) without PITCH in the LEF ({", ".join(l for l in rl if l in nop)}): '
+                  f'signal routing stops below {sig[k]}')
+            sig = sig[:k] if k >= 2 else [l for l in sig if l not in nop]
         if len(sig) < 2:
             raise StageError(f'could not infer --layers from the LEF routing layers {rl}; pass --layers, e.g. met1-met5')
         layers = f'{sig[0]}-{sig[-1]}'
