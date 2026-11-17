@@ -28,9 +28,32 @@ fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
 export CONDA_PKGS_DIRS="$PREFIX/pkgs-cache" TMPDIR="$PREFIX/tmp" CONDARC="$PREFIX/condarc"
 export XDG_CACHE_HOME="$PREFIX/home/.cache" XDG_CONFIG_HOME="$PREFIX/home/.config"
 mkdir -p "$CONDA_PKGS_DIRS" "$TMPDIR" "$PREFIX/home"
+# HTTPS certificates: company networks often re-sign HTTPS with their own root certificate, which the system trusts
+# (curl, git work) but conda's built-in list does not (CondaSSLError). Use the system's certificate bundle, or the one
+# given in CA_BUNDLE=/path/to/company-ca.pem. Verification stays on.
+CA="${CA_BUNDLE:-${SSL_CERT_FILE:-${REQUESTS_CA_BUNDLE:-}}}"
+if [ -z "$CA" ]; then
+  for f in /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/ca-bundle.pem; do
+    [ -s "$f" ] && { CA="$f"; break; }
+  done
+fi
+if [ -n "$CA" ]; then
+  [ -s "$CA" ] || { echo "ERROR: certificate bundle $CA not found"; exit 1; }
+  export SSL_CERT_FILE="$CA" REQUESTS_CA_BUNDLE="$CA" CURL_CA_BUNDLE="$CA"
+fi
 printf 'pkgs_dirs:\n  - %s\nchannels:\n  - conda-forge\nauto_update_conda: false\nnotify_outdated_conda: false\n' \
   "$CONDA_PKGS_DIRS" > "$CONDARC"
+[ -z "$CA" ] || printf 'ssl_verify: %s\n' "$CA" >> "$CONDARC"
 cnd() { HOME="$PREFIX/home" "$CONDA" "$@"; }   # conda never sees the real home directory
+if ! curl -fsS -m 20 -o /dev/null https://conda.anaconda.org/conda-forge/noarch/repodata.json.zst 2>"$PREFIX/.net_err"; then
+  echo "ERROR: cannot reach https://conda.anaconda.org with certificate bundle '${CA:-curl default}':"
+  sed 's/^/       /' "$PREFIX/.net_err"
+  echo "       If your company inspects HTTPS, ask IT for its root certificate (.pem/.crt) and run:"
+  echo "         CA_BUNDLE=/path/to/company-ca.pem bash $0"
+  echo "       If a proxy is required: export https_proxy=http://proxy.host:port (ask IT) and run again."
+  exit 1
+fi
+rm -f "$PREFIX/.net_err"
 
 if ! ( : > "$PREFIX/.write_test" ) 2>/dev/null; then
   echo "ERROR: cannot write in $PREFIX. Give a folder you can write to: bash $0 /path/you/can/write/local-tools"; exit 1

@@ -111,7 +111,9 @@ With `--route all` all 192 trees are valid and 112 of them improve U.
   puts OpenROAD and the flow's Python into `local-tools/` inside this folder (about 1.9 GB, 3 GB while installing;
   downloads only, conda-forge + litex-hub, no Anaconda "defaults" channel). Nothing is written outside this folder:
   conda's cache, temporary files and home-directory files are redirected into `local-tools/`, which `.gitignore`
-  keeps out of `git pull`. Then `source local-tools/env.sh` (each new terminal) and run with `--policy heuristic`. Every library
+  keeps out of `git pull`. Then `source local-tools/env.sh` (each new terminal) and run with `--policy heuristic`.
+  conda uses the system's HTTPS certificate bundle (company networks that re-sign HTTPS otherwise give `CondaSSLError`);
+  `CA_BUNDLE=/path/company-ca.pem bash tools/install_openroad_conda.sh` names another one, and `https_proxy` is honoured. Every library
   it loads is inside that folder (needs glibc 2.17 or newer); checked end to end on `tempsense` (40/40 valid reroutes,
   same baseline as OpenROAD 26Q2). With that older OpenROAD, the geometry export reads wires from the DEF
   (`flow/lib/defwires.py`, identical shapes to OpenDB's on 6 checked layouts).
