@@ -73,6 +73,23 @@ def route_job(case, state_def, nets, mode, rundir, guide_rects=None):
     return sec
 
 
+def route_errors(logs):
+    """the distinct error lines of these OpenROAD logs, with how many logs show each"""
+    seen = {}
+    for lg in logs:
+        try:
+            lines = Path(lg).read_text(errors='replace').splitlines()
+        except OSError:
+            continue
+        for l in sorted({re.sub(r'\b\d+(\.\d+)?\b', '#', x.strip()) for x in lines
+                         if re.search(r'\[ERROR|^ERROR|^Error|FLOW_ERROR', x.strip())}):
+            seen[l] = seen.get(l, 0) + 1
+    if not seen:
+        return '  (no error line in the logs: see the last lines of the first log)'
+    return '  router errors (count of logs):\n' + '\n'.join(f'    {n:3d}x {l[:200]}' for l, n in
+                                                         sorted(seen.items(), key=lambda kv: -kv[1])[:15])
+
+
 def try_route(case, state_def, net, rundir):
     """Router-default reroute of one net; False (instead of stopping the flow) when OpenROAD fails on it."""
     try:
@@ -299,7 +316,8 @@ def s2_candidates(case, out, st):
               f'{pdirs[bad[0]] / "route.log"})')
         nets = [n for n in nets if n not in bad]
         if not nets:
-            raise C.StageError(f'every router-default reroute failed; first log: {pdirs[bad[0]] / "route.log"}')
+            raise C.StageError(f'every router-default reroute failed; first log: {pdirs[bad[0]] / "route.log"}\n'
+                               + route_errors([pdirs[n] / 'route.log' for n in bad]))
     st.info['route_failed_nets'] = bad
     # pre-existing DRC violations: reported by every router-default reroute (>= 2 nets) or by the last normalize run;
     # they are tolerated for your own layouts unless --strict (tolerate_baseline_drc in cases.json)
