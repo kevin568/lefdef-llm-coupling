@@ -25,6 +25,17 @@ def _sha(p):
     return h.hexdigest()
 
 
+def routing_layers(lefs):
+    """names of the TYPE ROUTING layers of the LEFs"""
+    out = set()
+    for l in lefs:
+        t = Path(l).read_text(errors='replace')
+        for m in re.finditer(r'^[ \t]*LAYER[ \t]+(\S+)[ \t]*\r?\n(.*?)^[ \t]*END[ \t]+\1\b', t, re.M | re.S):
+            if re.search(r'^\s*TYPE\s+ROUTING\b', m.group(2), re.M):
+                out.add(m.group(1))
+    return out
+
+
 def lef_info(lefs):
     """(macros, layer names of every type, via rule names, fixed via names)"""
     macros, layers, rules, vias = set(), set(), set(), set()
@@ -262,7 +273,7 @@ def sanitize(def_path, lefs, drop=None, top_layer=None, above=(), ignore_layers=
         if k:
             emptied.append(sec)
     drop_conns = {(x[1], x[2]) for x in drop if x[0] == 'conn'}
-    mpins, no_pin, to_routed, pins_top = macro_pins(lefs), [], [], []
+    mpins, no_pin, to_routed, pins_top, ndr_dev = macro_pins(lefs), [], [], [], []
     above = set(above)
     top_side = 0
     if top_layer and above:
@@ -418,11 +429,20 @@ def sanitize(def_path, lefs, drop=None, top_layer=None, above=(), ignore_layers=
         keep = f[:2] + [x for x in f[2:] if x not in removed]
         return ('    ' + ' '.join(keep) + ' ' + tail) if len(keep) != len(f) else st
 
-    def ndr(st):   # NONDEFAULTRULES: layers / vias / via rules the LEF does not define
+    routing = routing_layers(lefs)
+
+    def ndr(st):   # NONDEFAULTRULES: rules on layers that are not metal layers, vias / via rules the LEF lacks
         if not st.strip().startswith('-'):
             return st
-        st = re.sub(r'\+\s*LAYER\s+(\S+)((?:\s+(?:WIDTH|DIAGWIDTH|SPACING|WIREEXT)\s+\d+)*)',
-                    lambda m: m.group(0) if m.group(1) in known else '', st)
+        # a rule on a device / cut layer (e.g. DEFAULT_Poly_36 on Poly) crashes the detailed router while it reads
+        # the technology ('map::at' right after DRT-0149): only rules on routing (metal) layers are kept
+        def keep(m):
+            if m.group(1) in known and m.group(1) in routing:
+                return m.group(0)
+            if m.group(1) in known:
+                ndr_dev.append(f'{st.split()[1]}:{m.group(1)}')
+            return ''
+        st = re.sub(r'\+\s*LAYER\s+(\S+)((?:\s+(?:WIDTH|DIAGWIDTH|SPACING|WIREEXT)\s+\d+)*)', keep, st)
         st = re.sub(r'\+\s*VIA\s+(\S+)', lambda m: m.group(0) if m.group(1) in known_vias_pre else '', st)
         st = re.sub(r'\+\s*VIARULE\s+(\S+)', lambda m: m.group(0) if m.group(1) in rules else '', st)
         return st
@@ -469,6 +489,9 @@ def sanitize(def_path, lefs, drop=None, top_layer=None, above=(), ignore_layers=
                      f'(e.g. {", ".join(sorted(set(other_fixes))[:4])})')
     if bad_layers:
         notes.append(f'wiring on layer(s) the LEF does not define ({", ".join(sorted(bad_layers)[:4])}) is left out')
+    if ndr_dev:
+        notes.append(f'{len(ndr_dev)} non-default rule entr(ies) on non-metal layers left out (e.g. {", ".join(ndr_dev[:3])}): '
+                     'the detailed router crashes on them (map::at while reading the technology)')
     if pins_top:
         notes.append(f'{len(pins_top)} I/O pin(s) only above {top_layer} (e.g. {", ".join(pins_top[:3])}): '
                      f'a copy of the shape on {top_layer} is added so the router can reach them')

@@ -220,6 +220,8 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     lef_paths = lef_files(lefs)
     from . import preflight   # OpenROAD reads the LEFs once; vias / via rules it rejects are left out of copies
     lef_paths, pnotes = preflight.fix_lefs(lef_paths)
+    lef_paths, vnotes = preflight.add_default_vias(lef_paths)   # cut layers with only via rules (DRT-0233)
+    pnotes += vnotes
     for n in pnotes:
         print(f'  note: {n}')
     if not Path(def_file).expanduser().exists():

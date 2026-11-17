@@ -296,3 +296,65 @@ def pick_mimcap(lefs):
     if not v:
         return [str(l) for l in lefs], [], []
     return v[0]['lefs'], v[0]['mim'], [f'MIM capacitor layer(s) {", ".join(v[0]["mim"])}: "{v[0]["desc"]}"']
+
+
+# ---------------------------------------------------------------- fixed vias for cut layers with only via rules
+def add_default_vias(lefs):
+    """The old detailed router needs at least one fixed VIA per cut layer between two metal layers (DRT-0233
+    "V1 does not have any vias"); LEFs that give only VIARULE ... GENERATE for a cut layer get, in a copy of the
+    technology LEF, one fixed VIA <rule>_FLOW DEFAULT built from that rule: its cut RECT, and the bottom / top
+    metal rectangles grown by the rule's ENCLOSURE values. -> (lefs, notes)"""
+    lefs = [str(l) for l in lefs]
+    t = Path(lefs[0]).read_text(errors='replace')
+    types = {m.group(1): (re.search(r'^\s*TYPE\s+(\S+)', m.group(2), re.M) or [None, ''])[1]
+             for m in re.finditer(r'^[ \t]*LAYER[ \t]+(\S+)[ \t]*\r?\n(.*?)^[ \t]*END[ \t]+\1\b', t, re.M | re.S)}
+    order = list(types)
+    blocks = list(re.finditer(r'^[ \t]*(VIA|VIARULE)[ \t]+(\S+)([^\n]*)\n(.*?)^[ \t]*END[ \t]+\2\b[^\n]*\n?', t, re.M | re.S))
+
+    def layers_of(body):
+        out, cur = [], None
+        for line in body.splitlines():
+            m = re.match(r'^\s*LAYER\s+(\S+)\s*;', line)
+            if m:
+                cur = [m.group(1), []]; out.append(cur)
+            elif cur is not None and line.strip():
+                cur[1].append(line.strip())
+        return out
+    fixed_cuts = set()
+    for b in blocks:
+        if b.group(1) == 'VIA':
+            fixed_cuts |= {l for l, _ in layers_of(b.group(4)) if types.get(l) == 'CUT'}
+    new, made = [], []
+    mim = set(_mim_layers(t))   # rules on a MIM capacitor layer last (the MIM handling may leave them out)
+    for b in sorted(blocks, key=lambda b: any(l in mim for l, _ in layers_of(b.group(4)))):
+        if b.group(1) != 'VIARULE' or 'GENERATE' not in b.group(3):
+            continue
+        ls = layers_of(b.group(4))
+        cuts = [x for x in ls if types.get(x[0]) == 'CUT']
+        mets = [x for x in ls if types.get(x[0]) == 'ROUTING']
+        if len(cuts) != 1 or len(mets) != 2 or cuts[0][0] in fixed_cuts:
+            continue
+        cut = cuts[0]
+        r = next((re.findall(r'-?[\d.]+', s) for s in cut[1] if s.startswith('RECT')), None)
+        if not r or len(r) < 4:
+            continue
+        x1, y1, x2, y2 = (float(v) for v in r[:4])
+        mets.sort(key=lambda x: order.index(x[0]))
+        lines = [f'VIA {b.group(2)}_FLOW DEFAULT']
+        for name, stmts in (mets[0], cut, mets[1]):
+            lines.append(f'  LAYER {name} ;')
+            if name == cut[0]:
+                lines.append(f'    RECT {x1:g} {y1:g} {x2:g} {y2:g} ;')
+                continue
+            e = next((re.findall(r'-?[\d.]+', s) for s in stmts if s.startswith('ENCLOSURE')), ['0', '0'])
+            ex, ey = (float(e[0]), float(e[1])) if len(e) >= 2 else (0., 0.)
+            lines.append(f'    RECT {x1 - ex:g} {y1 - ey:g} {x2 + ex:g} {y2 + ey:g} ;')
+        lines.append(f'END {b.group(2)}_FLOW\n')
+        new.append('\n'.join(lines)); made.append(f'{b.group(2)}({cut[0]})'); fixed_cuts.add(cut[0])
+    if not new:
+        return lefs, []
+    k = t.rfind('\nEND LIBRARY')
+    k = k if k >= 0 else len(t)
+    lefs[0] = _tech_copy(lefs[0], t[:k] + '\n' + '\n'.join(new) + t[k:], 'vias')
+    return lefs, [f'{len(made)} cut layer(s) have only via rules, no fixed via (the router needs one: DRT-0233): '
+                  f'a fixed via is made from each rule ({", ".join(made[:8])})']
