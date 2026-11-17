@@ -70,6 +70,16 @@ def check_lef_def(case):
     if missing:
         raise StageError(f'{len(missing)} cell/macro type(s) used in the DEF are not defined in the LEF files, e.g. '
                          f'{", ".join(missing[:8])}. Add the LEF that defines them to --lef.')
+    lef_rules = set()
+    for l in case['lefs']:
+        lef_rules |= set(re.findall(r'^\s*VIARULE\s+(\S+)', Path(l).read_text(errors='replace'), re.M | re.I))
+    used_rules = set(re.findall(r'\+\s*VIARULE\s+(\S+)', t))
+    if used_rules - lef_rules:
+        raise StageError(f'the DEF uses via rule(s) {", ".join(sorted(used_rules - lef_rules))} that the LEF files do not '
+                         'define (VIARULE ... GENERATE): the technology LEF is probably a different version from the one '
+                         'the layout was made with. Use that technology LEF.')
+    if not re.search(r'^TRACKS\s', t, re.M):
+        print('  note: the DEF has no TRACKS; they are made from the LEF routing pitches for each reroute')
     if 'ROUTED' not in t[t.find('\nNETS'):]:
         raise StageError('the DEF has no routed nets (no ROUTED wiring in NETS); the flow needs a routed layout')
     return len(used)
@@ -88,8 +98,24 @@ def def_net_name(def_file, net):
     raise StageError(f'--normalize: net "{net}" not found in the DEF NETS section')
 
 
+def plain_file(p):
+    """A .gz input is decompressed once into ~/.cache/lefdef-llm-coupling/<sha>/ (OpenROAD reads plain text)."""
+    import gzip
+    p = Path(p)
+    if p.suffix != '.gz':
+        return p
+    out = Path.home() / '.cache/lefdef-llm-coupling' / sha256(p)[:16] / p.name[:-3]
+    if not out.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(out.suffix + '.part')
+        with gzip.open(p, 'rb') as f, open(tmp, 'wb') as g:
+            shutil.copyfileobj(f, g)
+        tmp.replace(out)
+    return out
+
+
 def lef_files(items):
-    """LEF paths from files, folders (every *.lef inside) or comma-separated lists; technology LEF(s) first."""
+    """LEF paths from files, folders (every *.lef / *.lef.gz inside) or comma-separated lists; technology LEF first."""
     paths = []
     for it in items:
         for s in str(it).split(','):
@@ -97,21 +123,26 @@ def lef_files(items):
                 continue
             p = Path(s).expanduser().resolve()
             if p.is_dir():
-                found = sorted(p.glob('*.lef'))
+                found = sorted(list(p.glob('*.lef')) + list(p.glob('*.lef.gz')))
                 if not found:
-                    raise StageError(f'no *.lef file in folder {p}')
+                    raise StageError(f'no *.lef or *.lef.gz file in folder {p}')
                 paths += found
             elif p.exists():
                 paths.append(p)
             else:
                 raise StageError(f'missing input file {p}')
-    paths = list(dict.fromkeys(str(p) for p in paths))
+    paths = list(dict.fromkeys(str(plain_file(p)) for p in paths))
     # the technology LEF (routing LAYER definitions) must be read first; keep the given order otherwise
     tech = [p for p in paths if lef_routing_layers([p])]
     if len(tech) > 1:
-        raise StageError('several technology LEFs (with routing LAYER definitions): '
-                         + ', '.join(Path(p).name for p in tech) + '. Give only the one for this layout.')
+        names = [Path(p).name for p in tech]
+        raise StageError(f'{len(tech)} technology LEFs (with routing LAYER definitions) were given, e.g. '
+                         f'{", ".join(names[:4])}{" and others" if len(names) > 4 else ""}. Give only the one for this layout '
+                         '(e.g. one *_tech.lef plus its cell LEF) instead of the whole folder.')
     return tech + [p for p in paths if p not in tech]
+
+
+SKY130_LAYERS = {'li1', 'met1', 'met2', 'met3', 'met4', 'met5'}
 
 
 def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', strict=False):
@@ -119,19 +150,23 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     if not lefs:
         raise StageError('give the LEF files after the DEF: python flow/run.py A.def B.lef (files or folders)')
     lef_paths = lef_files(lefs)
+    rl = lef_routing_layers(lef_paths)
     if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
-        rl = lef_routing_layers(lef_paths)
-        if len(rl) < 3:
+        sig = [l for l in rl[1:] if not l.lower().startswith('top')]   # IHP TopMetal1/2: thick power metals
+        if len(sig) < 2:
             raise StageError(f'could not infer --layers from the LEF routing layers {rl}; pass --layers, e.g. met1-met5')
-        layers = f'{rl[1]}-{rl[-1]}'
+        layers = f'{sig[0]}-{sig[-1]}'
         print(f'--layers not given: using {layers} (routing layers in LEF: {", ".join(rl)})')
     if not rules:
-        if not layers.startswith('met'):
-            raise StageError('--rules is required for a non-SKY130 technology (OpenRCX rules file)')
+        if not rl or not set(rl) <= SKY130_LAYERS:
+            raise StageError(f'--rules (OpenRCX rules file) is required: only SKY130 rules are bundled, and the LEF '
+                             f'routing layers are {", ".join(rl)}')
         rules = str(REPO / 'data/pdk/sky130hd.rcx_rules')
     c = dict(name=name, lefs=lef_paths,
              layers=layers, rules=str(Path(rules).expanduser().resolve()), pool_nets=pool_nets, split='user', domain='user')
-    c['def'] = str(Path(def_file).expanduser().resolve())
+    if not Path(def_file).expanduser().exists():
+        raise StageError(f'missing input file {Path(def_file).expanduser().resolve()}')
+    c['def'] = str(plain_file(Path(def_file).expanduser().resolve()))
     if normalize == 'auto':
         c['normalize'] = 'auto'
     elif normalize and normalize != 'off':

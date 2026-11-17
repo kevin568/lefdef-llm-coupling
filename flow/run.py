@@ -58,6 +58,14 @@ def route_job(case, state_def, nets, mode, rundir, guide_rects=None):
     return sec
 
 
+def try_route(case, state_def, net, rundir):
+    """Router-default reroute of one net; False (instead of stopping the flow) when OpenROAD fails on it."""
+    try:
+        route_job(case, state_def, [net], 'default', rundir); return True
+    except C.StageError:
+        return False
+
+
 def extract_job(case, def_in, spef_out, log, def_out=''):
     return C.run_openroad(C.OR_DIR / 'extract.tcl', dict(LEFS=' '.join(case['lefs']), DEF_IN=def_in, RULES=case['rules'],
                           SPEF_OUT=spef_out, DEF_OUT=def_out), log, threads=ARGS.threads)
@@ -131,36 +139,67 @@ def known_violations(case, out):
 
 
 def auto_normalize(case, d, base_def, st):
-    """Some published DEFs are re-patched by OpenROAD's detailed router on its first run (every reroute then also changes
-    other nets). Probe: reroute one short 2-pin net with the router default and compare every other net. If nothing else
-    changed, the DEF is kept as it is. Otherwise the patched DEF becomes the baseline, repeated until a probe reroute
-    changes no other net (at most 4 rounds; from round 3 the re-patched net itself is rerouted)."""
+    """Some published DEFs are re-patched by OpenROAD's detailed router (a reroute then also changes other nets near
+    the rerouted one). Check: reroute, one at a time and with the router default (exactly what the later stages do), the
+    likely target nets (the pool_nets highest-coupling candidates of the input DEF, or the --nets matches) plus one short
+    2-pin net elsewhere, and compare every other net. If nothing else changed, the DEF is used as it is. Otherwise the
+    re-patched nets are rerouted (router default) into a new baseline and the check is repeated (at most 4 checks)."""
     ref = def_nets(base_def)
-    two_pin = [n for n, t in ref.items() if 'ROUTED' in t and len(re.findall(r'\(\s*\S+\s+\S+\s*\)', t.split('+')[0])) == 2
-               and not re.search(r'USE\s+(POWER|GROUND)', t) and not (case.get('net_regex') and re.search(case['net_regex'], n))]
-    if not two_pin:
+    conns = {n: len(re.findall(r'\(\s*\S+\s+\S+\s*\)', t.split('+')[0])) for n, t in ref.items()}
+    sig = [n for n, t in ref.items() if 'ROUTED' in t and not re.search(r'USE\s+(POWER|GROUND)', t)]
+    rx = case.get('net_regex')
+    cc = spef.read(d / 'input.spef')['listed_cc']
+    pool = sorted((n for n in sig if 2 <= conns[n] <= 8 and (not rx or re.search(rx, n))),
+                  key=lambda n: (-cc.get(n, 0.), n))[:case.get('pool_nets', 20)]
+    two_pin = [n for n in sig if conns[n] == 2 and n not in pool and not (rx and re.search(rx, n))]
+    probe = min(two_pin, key=lambda n: (len(ref[n]), n)) if two_pin else None
+    check = ([probe] if probe else []) + pool
+    if not check:
+        info = dict(mode='auto', skipped='no routed signal net to check with', patched=False, stable=None)
+        (d / 'normalize.json').write_text(json.dumps(info, indent=1))
+        print('  note: re-patch check skipped (no routed signal net to check with); the DEF is used as it is')
         return base_def
-    net = probe = min(two_pin, key=lambda n: (len(ref[n]), n))
-    cur, rounds = base_def, []
-    for i in range(4):
-        rd = d / f'normalize_{i + 1}'
-        route_job(case, cur, [net], 'default', rd)
-        old, new = def_nets(cur), def_nets(rd / 'out.def')
-        changed = sorted(x for x in old if x != net and old[x] != new.get(x))
-        rounds.append(dict(net=net, other_nets_changed=len(changed), examples=changed[:10], drc=str(rd / 'drc.rpt')))
-        if not changed:
+    cur, rounds, dirs = base_def, [], {}
+    for k in range(4):
+        cd = d / f'normalize_check_{k + 1}'
+        dirs = {n: cd / f'{j:02d}_{safe(n)}' for j, n in enumerate(check)}
+        with ThreadPoolExecutor(ARGS.jobs) as ex:
+            ok = dict(zip(check, ex.map(lambda n: try_route(case, cur, n, dirs[n]), check)))
+        failed = [n for n in check if not ok[n]]
+        dirs = {n: p for n, p in dirs.items() if ok[n]}
+        old = def_nets(cur); changed = set(); per_net = {}
+        for n in dirs:
+            new = def_nets(dirs[n] / 'out.def')
+            ch = sorted(x for x in old if x != n and old[x] != new.get(x))
+            per_net[n] = len(ch); changed |= set(ch)
+        changed = sorted(changed)
+        rounds.append(dict(kind='check', base=str(cur), nets=len(check), other_nets_changed=len(changed),
+                           examples=changed[:10], per_net=per_net, route_failed=failed))
+        if not changed or k == 3:
             break
-        cur = rd / 'out.def'
-        if i >= 1:
-            net = changed[0]
-    info = dict(mode='auto', probe=probe, patched=cur != base_def, stable=rounds[-1]['other_nets_changed'] == 0,
-                rounds=rounds, drc=rounds[-1]['drc'])
+        pd = d / f'normalize_patch_{k + 1}'   # reroute the re-patched nets (router default) into a new baseline
+        try:
+            route_job(case, cur, changed, 'default', pd)
+        except C.StageError:
+            rounds.append(dict(kind='patch', nets=len(changed), route_failed=True, other_nets_changed=len(changed)))
+            break   # keep the last good baseline; reported as not stable
+        rounds.append(dict(kind='patch', nets=len(changed), drc_violations=len(G.violations(pd / 'drc.rpt'))))
+        cur = pd / 'out.def'
+    stable = rounds[-1]['other_nets_changed'] == 0 and bool(dirs)   # no check reroute succeeded: nothing verified
+    info = dict(mode='auto', probe=probe, check_nets=check, patched=cur != base_def, stable=stable, rounds=rounds,
+                drc=str(next(iter(dirs.values())) / 'drc.rpt') if stable and dirs else None,   # an unstable run's violations are not tolerated
+                route_dirs={n: str(p) for n, p in dirs.items()} if stable else {})   # reused by s2_candidates
     (d / 'normalize.json').write_text(json.dumps(info, indent=1))
-    st.info.update(def_repatched=info['patched'], normalize_stable=info['stable'])
-    if info['patched']:
-        print(f'  note: OpenROAD re-patches this DEF ({rounds[0]["other_nets_changed"]} other nets changed when {probe} was '
-              f'rerouted); baseline = patched DEF after {len(rounds) - (1 if info["stable"] else 0)} probe reroute(s)'
-              + ('' if info['stable'] else ', still not stable: expect few valid reroutes'))
+    st.info.update(def_repatched=info['patched'], normalize_stable=stable)
+    if info['patched'] or not stable:
+        first = rounds[0]
+        print(f'  note: OpenROAD re-patches this DEF (rerouting {len(check)} nets one at a time changed '
+              f'{first["other_nets_changed"]} other nets); '
+              + (f'baseline = DEF with those nets rerouted by the router default ({sum(r["kind"] == "patch" for r in rounds)} '
+                 'patch round(s))' if stable else
+                 f'still not stable after {sum(r["kind"] == "patch" for r in rounds)} patch rounds '
+                 f'({rounds[-1]["other_nets_changed"]} nets keep changing): expect few valid reroutes '
+                 '(the DEF may not match these LEFs)'))
     return cur
 
 
@@ -200,17 +239,38 @@ def s2_candidates(case, out, st):
     # pin access: OpenROAD's own reroute of each pool net (its global-route guide gives the pin-access gcells;
     # the same run is also the "default" (router's choice) candidate of that net)
     pdirs = {n: d / 'pin_access' / f'{j:02d}_{safe(n)}' for j, n in enumerate(nets)}
+    nj = out / 's1_import/normalize.json'
+    plain = lambda s: s.replace('\\', '')   # DEF names may escape bus brackets, OpenDB names do not
+    done = {plain(k): Path(v) for k, v in
+            (json.loads(nj.read_text()).get('route_dirs') or {}).items()} if nj.exists() else {}
+    for n in nets:   # the auto-normalize check already rerouted these nets, one at a time, on this same baseline
+        if plain(n) in done and (done[plain(n)] / 'out.def').exists():
+            pdirs[n] = done[plain(n)]
+    todo = [n for n in nets if pdirs[n].parent.name == 'pin_access']
     with ThreadPoolExecutor(ARGS.jobs) as ex:
-        list(ex.map(lambda n: route_job(case, base_def, [n], 'default', pdirs[n]), nets))
+        ok = dict(zip(todo, ex.map(lambda n: try_route(case, base_def, n, pdirs[n]), todo)))
+    bad = [n for n in todo if not ok[n]]
+    if bad:   # OpenROAD could not reroute these nets at all: leave them out of the pool
+        print(f'  note: {len(bad)} net(s) left out: the router-default reroute failed (e.g. {bad[0]}, log: '
+              f'{pdirs[bad[0]] / "route.log"})')
+        nets = [n for n in nets if n not in bad]
+        if not nets:
+            raise C.StageError(f'every router-default reroute failed; first log: {pdirs[bad[0]] / "route.log"}')
+    st.info['route_failed_nets'] = bad
     # pre-existing DRC violations: reported by every router-default reroute (>= 2 nets) or by the last normalize run;
     # they are tolerated for your own layouts unless --strict (tolerate_baseline_drc in cases.json)
     sets = [set(G.violations(pdirs[n] / 'drc.rpt')) for n in nets]
     pre = set.intersection(*sets) if len(sets) >= 2 else set()
-    nj = out / 's1_import/normalize.json'
-    if nj.exists():
+    if nj.exists() and json.loads(nj.read_text()).get('drc'):
         pre |= set(G.violations(json.loads(nj.read_text())['drc']))
     (d / 'baseline_violations.json').write_text(json.dumps(dict(violations=sorted(pre)), indent=1))
     st.info.update(baseline_violations=len(pre), tolerated=bool(case.get('tolerate_baseline_drc')))
+    if pre and case.get('tolerate_baseline_drc'):
+        kinds = {}
+        for v in pre:
+            kinds[v[0]] = kinds.get(v[0], 0) + 1
+        print(f'  note: {len(pre)} pre-existing DRC violation(s) are not counted as new ('
+              + ', '.join(f'{n} {k}' for k, n in sorted(kinds.items())) + f'; list: {d / "baseline_violations.json"}; --strict counts them)')
     grid = G.gcell_grid(pdirs[nets[0]] / 'route.log')
     if not grid:
         raise C.StageError(f'could not read GCELLGRID from {pdirs[nets[0]] / "route.log"}')
@@ -522,10 +582,10 @@ def main():
     ARGS = ap.parse_args()
     try:
         first = ARGS.inputs[0]
-        if ARGS.def_file or first.lower().endswith('.def'):
+        if ARGS.def_file or first.lower().endswith(('.def', '.def.gz')):
             def_file = ARGS.def_file or first
-            lefs = (ARGS.inputs[1:] if not ARGS.def_file else ARGS.inputs[1:]) + ([ARGS.lef] if ARGS.lef else [])
-            ARGS.case = first if ARGS.def_file else Path(first).stem
+            lefs = ARGS.inputs[1:] + ([ARGS.lef] if ARGS.lef else [])
+            ARGS.case = first if ARGS.def_file else re.sub(r'\.def(\.gz)?$', '', Path(first).name, flags=re.I)
             case = C.own_case(ARGS.case, def_file, lefs, ARGS.layers, ARGS.rules, ARGS.pool_nets, ARGS.normalize, ARGS.strict)
         else:
             if len(ARGS.inputs) > 1:
@@ -539,6 +599,15 @@ def main():
     except C.StageError as e:
         print(f'ERROR: {e}'); sys.exit(2)
     out = Path(ARGS.out or C.REPO / 'out' / ARGS.case).resolve(); out.mkdir(parents=True, exist_ok=True)
+    # an output folder belongs to one set of inputs: finished stages are reused only for the same inputs
+    fp = dict(def_sha256=C.sha256(case['def']), lef_sha256=[C.sha256(l) for l in case['lefs']], layers=case['layers'],
+              rules_sha256=C.sha256(case['rules']), nets=case.get('net_regex'), pool_nets=case.get('pool_nets'),
+              normalize=case.get('normalize'), tolerate_baseline_drc=bool(case.get('tolerate_baseline_drc')))
+    fpf = out / 'inputs.json'
+    if fpf.exists() and json.loads(fpf.read_text()) != fp:
+        print(f'ERROR: {out} holds a run with different inputs or options ({fpf}). Use --out <new folder>, '
+              f'or delete that folder to start again.'); sys.exit(2)
+    fpf.write_text(json.dumps(fp, indent=1))
     todo = [ARGS.only] if ARGS.only else STAGES[STAGES.index(ARGS.start):] if ARGS.start else STAGES
     for name in STAGES:
         if name not in todo:

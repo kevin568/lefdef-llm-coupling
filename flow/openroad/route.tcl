@@ -3,6 +3,13 @@
 foreach l $::env(LEFS) { read_lef $l }
 read_def $::env(STATE_DEF)
 set block [ord::get_db_block]
+# DEFs written without TRACKS (e.g. some test DEFs): build the missing track grids from the LEF pitches
+foreach layer [[ord::get_db_tech] getLayers] {
+  if {[$layer getType] == "ROUTING" && [$block findTrackGrid $layer] == "NULL"} {
+    make_tracks [$layer getName]
+    puts "FLOW made tracks for [$layer getName] from the LEF pitch"
+  }
+}
 set n_ripped 0
 foreach name $::env(TARGETS) {
   set net [$block findNet $name]

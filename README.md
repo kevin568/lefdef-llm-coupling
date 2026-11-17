@@ -17,6 +17,8 @@ the reroute is legal (target connected, no new DRC violation, every other net un
 ## Quick start
 
 ```bash
+git clone https://github.com/kevin568/lefdef-llm-coupling.git    # the full URL (git clone owner/name alone fails)
+cd lefdef-llm-coupling
 pip install -r requirements.txt          # Python 3.10+; torch/peft/bitsandbytes only needed for the LLM
 export OPENROAD=/path/to/openroad         # or have `openroad` on PATH
 python flow/run.py tempsense                          # LLM policy (CUDA GPU), best tree per net
@@ -34,22 +36,37 @@ python flow/run.py A.def B.lef --nets vco    # only reroute nets whose name matc
 ```
 
 What is decided for you (each can be overridden):
-- **LEF order**: the technology LEF (the one with routing `LAYER` definitions) is read first. A folder with two
-  technologies (e.g. SKY130 and Nangate45) stops with a message naming them.
-- **Routing layers** (`--layers`): every LEF routing layer except the lowest (SKY130: `met1-met5`).
-- **Extraction rules** (`--rules`): the bundled SKY130 file for `met*` layers; pass the OpenRCX rules for other
-  technologies.
+- **Inputs**: `.def.gz` and `.lef.gz` are accepted (decompressed once into `~/.cache/lefdef-llm-coupling/`); a folder
+  means every `*.lef` / `*.lef.gz` in it.
+- **LEF order**: the technology LEF (the one with routing `LAYER` definitions) is read first. Several technology LEFs
+  (e.g. a whole PDK `lef/` folder) stop with a message: give one technology LEF plus its cell LEF.
+- **Routing layers** (`--layers`): every LEF routing layer except the lowest, and without IHP's `TopMetal*` power
+  layers (SKY130: `met1-met5`; IHP: `Metal2-Metal5`).
+- **Extraction rules** (`--rules`): the bundled SKY130 file when the LEF layers are SKY130's (`li1`, `met1`-`met5`).
+  Any other technology stops and asks for its OpenRCX rules file.
 - **Policy** (`--policy`): the LLM when a CUDA GPU and its packages are present, otherwise the geometric heuristic.
 - **Published DEFs that OpenROAD re-patches** (`--normalize auto`): on some older layouts the first OpenROAD detailed
   route also fixes pre-existing defects, so every reroute would change other nets and be marked invalid. Stage
-  `s1_import` reroutes one short 2-pin net and compares every other net. If nothing else changed (e.g. `tempsense`),
-  the DEF is used as it is. Otherwise the patched DEF becomes the baseline, and the terminal prints a note.
-  `s1_import/normalize.json` records the probe nets and which nets were patched. `--normalize off` disables it;
-  `--normalize NET` reroutes a net you choose.
-- **Pre-existing DRC violations**: a violation that every router-default reroute reports is listed in
-  `s2_candidates/baseline_violations.json` and not counted as new. `--strict` counts it.
-- `s0_check` stops with a plain message if a cell/macro used by the DEF is missing from the LEFs or the DEF is not
-  routed.
+  `s1_import` reroutes, one at a time and with the router default (as the later stages do), the likely target nets
+  plus one short 2-pin net elsewhere, and compares every other net. If nothing else changed (e.g. `tempsense`), the
+  DEF is used as it is (and these reroutes are reused by `s2_candidates`). Otherwise the re-patched nets are rerouted
+  into a new baseline and the check is repeated (at most 4 checks); the terminal prints a note, and says so when the
+  DEF never becomes stable (then the DEF usually does not match the LEFs and few reroutes are valid).
+  `s1_import/normalize.json` records every round. `--normalize off` disables it; `--normalize NET` reroutes a net
+  you choose.
+- **Pre-existing DRC violations**: a violation that every router-default reroute reports (or that the last, stable
+  normalize round reports) is listed in `s2_candidates/baseline_violations.json`, printed as a count by type, and not
+  counted as new. `--strict` counts it.
+- **Output folder**: `out/<DEF name>`. A folder keeps an `inputs.json` fingerprint; a second run with a different
+  layout or options in the same folder stops instead of reusing old stages (e.g. two `user_project_wrapper.def`):
+  use `--out`.
+- `s0_check` stops with a plain message if a cell/macro used by the DEF is missing from the LEFs, if the DEF uses a
+  via rule (`VIARULE ... GENERATE`) the technology LEF does not define (a different PDK version: e.g. IHP's
+  `viagen56` exists in the OpenROAD-flow-scripts copy of `sg13g2_tech.lef` but not in newer IHP-Open-PDK releases),
+  or if the DEF is not routed.
+- **DEF without `TRACKS`**: track grids are made from the LEF routing pitches for each reroute (a note is printed).
+- **A net OpenROAD cannot reroute** (the router stops with an error on it) is left out of the pool with a note and
+  its log path, instead of stopping the run.
 
 Checked with nothing but `A.def B.lef` (plus `--nets`): `tempsense` keeps its published DEF (same baseline sha256
 as the bundled case); the raw VCO-ADC v2 top level and `vco_macro` are detected as re-patched, patched
