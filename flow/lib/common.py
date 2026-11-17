@@ -192,7 +192,7 @@ def cells_only_lef(path, skip_sites=()):
 SKY130_LAYERS = {'li1', 'met1', 'met2', 'met3', 'met4', 'met5'}
 
 
-from .defcells import missing_masters, def_without_masters  # noqa: E402
+from .defcells import sanitize as sanitize_def  # noqa: E402
 
 
 def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', strict=False):
@@ -219,14 +219,12 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     if not Path(def_file).expanduser().exists():
         raise StageError(f'missing input file {Path(def_file).expanduser().resolve()}')
     c['def'] = str(plain_file(Path(def_file).expanduser().resolve()))
-    missing = missing_masters(c['def'], lef_paths)
-    if missing:   # cells without a LEF: left out of a DEF copy; nets that touch them are kept as they are (not rerouted)
-        c['def'], n_rm, fixed = def_without_masters(c['def'], set(missing))
+    # DEF parts the LEFs do not define (cells, via rules, layers): a DEF copy without them, so the flow keeps running
+    c['def'], notes, fixed = sanitize_def(c['def'], lef_paths)
+    if fixed:
         c['fixed_nets'] = fixed
-        print(f'  note: {len(missing)} cell type(s) used in the DEF have no LEF definition ({", ".join(missing[:6])}'
-              f'{" ..." if len(missing) > 6 else ""}): their {n_rm} instance(s) are left out of a copy of the DEF; '
-              f'the {len(fixed)} net(s) touching them keep their wiring (counted as neighbours) but are not rerouted. '
-              'Give the LEF that defines them to include them.')
+    for n in notes:
+        print(f'  note: {n}')
     if normalize == 'auto':
         c['normalize'] = 'auto'
     elif normalize and normalize != 'off':
