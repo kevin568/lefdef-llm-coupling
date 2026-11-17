@@ -67,6 +67,35 @@ def def_reductions(def_text, masters):
     return out
 
 
+def ladder(def_text, pin_layer='', half=100):
+    """growing designs for locating a failure that no single reduction removes:
+    [(key, description, DEF text)] from an empty die up to all connections. The rungs without the design's nets get
+    one probe net between two small I/O pins on pin_layer (the router refuses a design without nets, GRT-0094, and
+    crashes on a net without terminals)"""
+    head_end = def_text.find('\nCOMPONENTS')
+    if head_end < 0:
+        head_end = def_text.find('\nNETS')
+    head = def_text[:head_end + 1] if head_end >= 0 else def_text
+    # header without sections that reference design objects (keep VERSION..DIEAREA, ROW, TRACKS, GCELLGRID lines)
+    for s in ('VIAS', 'NONDEFAULTRULES', 'REGIONS', 'PROPERTYDEFINITIONS', 'STYLES', 'PINS'):
+        head = _drop_section(head, s)
+    sec = lambda n: (lambda sp: def_text[sp[0]:sp[3]] if sp else '')(_section_span(def_text, n))
+    nets_conn = _rewrite(sec('NETS'), 'NETS', _connectivity_only) if sec('NETS') else ''
+    nets_conn = _rewrite(nets_conn, 'NETS', lambda s: re.sub(r'\(\s*PIN\s+\S+\s*\)', '', s)) if nets_conn else ''
+    end = 'END DESIGN\n'
+    die = re.search(r'DIEAREA\s*\(\s*(-?\d+)\s+(-?\d+)\s*\)\s*\(\s*(-?\d+)\s+(-?\d+)\s*\)', def_text)
+    x1, y1, x2, y2 = (int(v) for v in die.groups()) if die else (0, 0, 100000, 100000)
+    ax, ay, bx, by = x1 + (x2 - x1) // 4, y1 + (y2 - y1) // 2, x1 + 3 * (x2 - x1) // 4, y1 + (y2 - y1) // 2
+    pin = lambda n, x, y: (f'    - {n} + NET flow_probe_net + DIRECTION INPUT + USE SIGNAL\n      + LAYER {pin_layer} '
+                           f'( {-half} {-half} ) ( {half} {half} ) + PLACED ( {x} {y} ) N ;\n')
+    dummy = ('PINS 2 ;\n' + pin('flow_probe_a', ax, ay) + pin('flow_probe_b', bx, by) + 'END PINS\n'
+             'NETS 1 ;\n    - flow_probe_net ( PIN flow_probe_a ) ( PIN flow_probe_b ) + USE SIGNAL ;\nEND NETS\n')
+    return [('ladder:1_empty', 'empty design (die area, rows, tracks only)', head + dummy + end),
+            ('ladder:2_cells', '+ all cells (COMPONENTS)', head + sec('COMPONENTS') + dummy + end),
+            ('ladder:3_vias', '+ the DEF via definitions (VIAS)', head + sec('VIAS') + sec('COMPONENTS') + dummy + end),
+            ('ladder:4_conns', '+ net connections, no wiring', head + sec('VIAS') + sec('COMPONENTS') + nets_conn + end)]
+
+
 def _in_macros(text, fn):
     return re.sub(r'^([ \t]*MACRO[ \t]+(\S+)[ \t]*\r?\n)(.*?)(^[ \t]*END[ \t]+\2\b)',
                   lambda m: m.group(1) + fn(m.group(3)) + m.group(4), text, flags=re.M | re.S)

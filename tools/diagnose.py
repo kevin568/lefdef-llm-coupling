@@ -310,13 +310,12 @@ def c_route(case, d, n_nets, geo):
                 summary=f'{ok}/{len(picks)} reroutes succeeded' + (f'; first error: {errs[0].strip()[:160]}' if errs and ok < len(picks) else ''))
 
 
-def context(lines, n=8):
-    """the last informative log lines before the first error line"""
-    for i, l in enumerate(lines):
-        if re.search(r'\[ERROR|^ERROR|^Error|terminate called|std::', l.strip()):
-            before = [x.strip() for x in lines[max(0, i - 40):i] if x.strip() and not x.strip().startswith('[WARNING ODB')]
-            return [x[:200] for x in before[-n:]] + [l.strip()[:200]]
-    return []
+def context(lines, n=10):
+    """what the router logged last: OpenROAD's own [INFO/WARNING DRT|GRT] lines come through another buffer than the
+    flow's puts lines and can land after the error line, so they are taken from the whole log"""
+    tool = [x.strip()[:200] for x in lines if re.search(r'\[(INFO|WARNING) (DRT|GRT)-', x)]
+    err = next((x.strip()[:200] for x in lines if re.search(r'\[ERROR|^ERROR|^Error|terminate called|std::', x.strip())), '')
+    return (['(no router log line)'] if not tool else tool[-n:]) + ([err] if err else [])
 
 
 @check('11 bisection: which part of the design the router cannot handle')
@@ -335,6 +334,27 @@ def c_bisect(case):
             fixes.append(d)
     summ = (f'error disappears without: {"; ".join(fixes)}' if fixes else
             'error stays with every single reduction (combined cause or technology-level)')
+    # growing designs: the first rung that fails isolates technology / tracks, cells, DEF vias or nets
+    text = Path(case['def']).read_text(errors='replace')
+    det.append('--- growing designs (first FAIL = where the problem starts) ---')
+    from lib.lefpins import _layer_size
+    bot = case['layers'].split('-')[0]
+    w, pch, _ = _layer_size(case['lefs'], bot)
+    u = re.search(r'UNITS\s+DISTANCE\s+MICRONS\s+(\d+)', text)
+    half = max(int(max(w, pch) * (int(u.group(1)) if u else 1000)), 10)
+    for k, d, t in Rd.ladder(text, bot, half):
+        df = Rd.write_def(case['def'], t, k)
+        e = [x for x in P.router_probe(case['lefs'], df, case['layers'], case.get('skip_tracks', []),
+                                       route_net='flow_probe_net' if 'flow_probe_net' in t else '')
+             if not x.startswith('(no error line')]
+        det.append(f'{"OK  " if not e else "FAIL"} {d}' + (f'  -> {e[0][:110]}' if e else ''))
+    rl = C.lef_routing_layers(case['lefs']); top = case['layers'].split('-')[-1]
+    above = rl[rl.index(top) + 1:] if top in rl else []
+    if above:   # tracks on the layers above the signal range (MT ...) left out
+        e = [x for x in P.router_probe(case['lefs'], case['def'], case['layers'],
+                                       list(case.get('skip_tracks', [])) + above) if not x.startswith('(no error line')]
+        det.append(f'{"OK  " if not e else "FAIL"} full design, no tracks on {", ".join(above)}'
+                   + (f'  -> {e[0][:110]}' if e else ''))
     if not fixes:   # several causes at once: cumulative reductions (what the flow itself does to keep running)
         _, _, applied, left = Rd.repair(case, base)
         det.append('cumulative: ' + ('router accepts the design without: ' + '; '.join(applied) if not left else

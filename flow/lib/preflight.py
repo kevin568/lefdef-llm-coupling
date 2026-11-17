@@ -155,17 +155,20 @@ def unmark_mimcap(lefs):
                   'their vias, so the technology LEF copy drops the MIMCAP mark (no signal routing on them)']
 
 
-def router_probe(lefs, def_in, layers, skip_tracks=()):
+def router_probe(lefs, def_in, layers, skip_tracks=(), route_net=''):
     """Run the reroute script once with an empty guide (nothing is rerouted): the detailed router reads the whole
-    technology and does pin access for every cell, which is where it stops on what it cannot use. -> error lines"""
-    d = CACHE / ('router_probe' + ('_' + '_'.join(skip_tracks) if skip_tracks else '') + '_' + C.sha256(lefs[0])[:6])
+    technology and does pin access for every cell, which is where it stops on what it cannot use. -> error lines.
+    route_net: instead really reroute this one net (global + detailed route), for designs without a gcell grid."""
+    d = CACHE / ('router_probe' + ('_' + '_'.join(skip_tracks) if skip_tracks else '') + '_' + C.sha256(lefs[0])[:6]
+                 + ('_net' if route_net else ''))
     d.mkdir(parents=True, exist_ok=True)
     (d / 'empty.guide').write_text('')
     log = d / 'route.log'
     try:
         C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(map(str, lefs)), STATE_DEF=def_in, OUT_DEF=d / 'out.def',
-                       LAYERS=layers, TARGETS='', MODE='probe', GUIDE=d / 'empty.guide', DRC=d / 'drc.rpt',
-                       SKIP_TRACKS=' '.join(skip_tracks)), log, timeout=3600)
+                       LAYERS=layers, TARGETS='{' + route_net + '}' if route_net else '',
+                       MODE='default' if route_net else 'probe', GUIDE=d / ('grt.guide' if route_net else 'empty.guide'),
+                       DRC=d / 'drc.rpt', SKIP_TRACKS=' '.join(skip_tracks)), log, timeout=3600)
         return []
     except C.StageError:
         return [e for e in _errors(log.read_text(errors='replace')) if 'GRT-0253' not in e] or ['(no error line: see ' + str(log) + ')']

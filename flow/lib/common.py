@@ -251,6 +251,16 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
         print(f'  note: MIM capacitor layer(s) {", ".join(v["mim"])}: the router accepts "{v["desc"]}" on this design '
               f'(used; no signal routing on them)' + (f'. Rejected: {rej}' if rej else ''))
     print(best['out'], end='')
+    if rerrs:   # first: no tracks on the layers above the signal range (nothing is routed there)
+        rl_ = lef_routing_layers(c['lefs']); top_ = c['layers'].split('-')[-1]
+        above_ = rl_[rl_.index(top_) + 1:] if top_ in rl_ else []
+        if above_:
+            sk = sorted(set(c.get('skip_tracks', [])) | set(above_))
+            e2 = [x for x in preflight.router_probe(c['lefs'], c['def'], c['layers'], sk) if not x.startswith('(no error line')]
+            if not e2:
+                print(f'  note: the router stops when tracks exist on {", ".join(above_)} ({rerrs[0][:90]}); no tracks are '
+                      'built on the layers above the signal range')
+                c['skip_tracks'], rerrs = sk, []
     if rerrs:   # keep running: the least destructive reduced copy the router accepts (lib/reduce.py)
         from . import reduce as Rd
         lf, df, applied, left = Rd.repair(c, rerrs)
