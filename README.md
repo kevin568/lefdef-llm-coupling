@@ -14,6 +14,19 @@ What you get per layout: for each high-coupling net, the model's best rerouting 
 capacitance before and after, the change of the whole design's coupling, wire length and via changes, and whether
 the reroute is legal (target connected, no new DRC violation, every other net untouched).
 
+## Coupling scan without OpenROAD (`flow/lite.py`)
+
+```bash
+python3 flow/lite.py A.def tech.lef cells.lef            # seconds; pure Python 3.6+, nothing else needed
+python3 flow/lite.py A.def tech.lef cells.lef --spef A.spef   # real coupling (fF) from StarRC / Calibre / OpenRCX
+```
+
+Ranks every routed signal net by coupling (same-layer parallel run within 2 pitches, or fF from a SPEF), lists each
+net's top neighbours, and for the top nets suggests lower-coupling trees with an estimated reduction. Results in
+`out/lite/<DEF name>/` (report.md, nets.csv, suggestions.csv, guides/). The ranking is reliable (Spearman 0.90-0.96
+against OpenRCX on 6 public layouts); the estimated reduction is an optimistic upper bound, because nothing is
+rerouted or re-extracted: confirm the suggested nets with the full flow below.
+
 ## Quick start
 
 ```bash
