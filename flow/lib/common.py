@@ -221,10 +221,6 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     for n in pnotes:
         print(f'  note: {n}')
     rl = lef_routing_layers(lef_paths)
-    from .lefpins import add_pin_access   # signal pins only on poly / diffusion: a routing-layer shape over them
-    lef_paths, anotes = add_pin_access(lef_paths, rl)
-    for n in anotes:
-        print(f'  note: {n}')
     if not layers:   # default: every routing layer except the lowest (local interconnect / metal1 pin layer)
         sig = [l for l in rl[1:] if not l.lower().startswith('top')]   # IHP TopMetal1/2: thick power metals
         nop = lef_pitchless_layers(lef_paths)
@@ -237,6 +233,12 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
             raise StageError(f'could not infer --layers from the LEF routing layers {rl}; pass --layers, e.g. met1-met5')
         layers = f'{sig[0]}-{sig[-1]}'
         print(f'--layers not given: using {layers} (routing layers in LEF: {", ".join(rl)})')
+    # signal pins the router cannot reach (shapes only on poly / diffusion, or only above the top signal layer,
+    # e.g. a MIM capacitor plate): a routing-layer shape at the same place, in a copy of the cell LEF
+    from .lefpins import add_pin_access
+    lef_paths, anotes = add_pin_access(lef_paths, rl, layers.split('-')[-1])
+    for n in anotes:
+        print(f'  note: {n}')
     if not rules:
         if rl and set(rl) <= SKY130_LAYERS:
             rules = str(REPO / 'data/pdk/sky130hd.rcx_rules')
@@ -254,7 +256,9 @@ def own_case(name, def_file, lefs, layers, rules, pool_nets, normalize='auto', s
     from .defcells import statement_at
     src, drop = c['def'], set()
     for _ in range(60):
-        c['def'], notes, fixed = sanitize_def(src, lef_paths, drop)
+        top = layers.split('-')[-1]
+        c['def'], notes, fixed = sanitize_def(src, lef_paths, drop, top,
+                                              rl[rl.index(top) + 1:] if top in rl else ())
         errs = preflight.check_def(lef_paths, c['def'])
         if not errs:
             break

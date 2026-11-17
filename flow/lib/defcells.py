@@ -228,7 +228,7 @@ def statement_at(def_path, line_no):
     return ('line', lines[i].strip()) if lines[i].strip() else None
 
 
-def sanitize(def_path, lefs, drop=None):
+def sanitize(def_path, lefs, drop=None, top_layer=None, above=()):
     """-> (DEF path to use, notes [str], fixed nets [names]); the same path and no notes when nothing is needed.
     drop: statement keys / line texts to leave out (what OpenROAD still could not read, see statement_at)."""
     macros, known, rules, lef_vias = lef_info(lefs)
@@ -247,7 +247,15 @@ def sanitize(def_path, lefs, drop=None):
     drop_lines = {x[1] for x in drop if x[0] == 'line'}
     drop_names = {x[1] for x in drop if x[0] == 'name'}
     drop_conns = {(x[1], x[2]) for x in drop if x[0] == 'conn'}
-    mpins, no_pin, to_routed = macro_pins(lefs), [], []
+    mpins, no_pin, to_routed, pins_top = macro_pins(lefs), [], [], []
+    above = set(above)
+    top_side = 0
+    if top_layer and above:
+        from .lefpins import _layer_size
+        w, p, _ = _layer_size(lefs, top_layer)
+        u = re.search(r'^\s*UNITS\s+DISTANCE\s+MICRONS\s+(\d+)', text, re.M)
+        top_side = int(round(max(2 * w, p) * (int(u.group(1)) if u else 1000)))
+        top_side += top_side % 2
     s_comp = _section(text, 'COMPONENTS')
     master = dict(re.findall(r'^\s*-\s+(\S+)\s+(\S+)', s_comp[1], re.M)) if s_comp else {}
     if drop_lines:
@@ -360,6 +368,18 @@ def sanitize(def_path, lefs, drop=None):
                     lambda m: '' if gone('POLYGON', m.group(1)) else m.group(0), st)
         st = re.sub(r'\+\s*VIA\s+(\S+)(?:\s+MASK\s+\d+)?\s*' + pt,
                     lambda m: '' if gone('VIA', m.group(1)) else m.group(0), st)
+        if top_layer and above:   # I/O pin only above the top signal layer: the router cannot reach it from below
+            shape = r'\+\s*LAYER\s+(\S+)' + opt + r'\s*(' + pt + r')\s*(' + pt + r')'
+            lays = re.findall(r'\+\s*LAYER\s+(\S+)', st)
+            if lays and all(l in above for l in lays):
+                def copy(m):   # at least one pitch of the top layer wide, so the detailed router finds an access point
+                    (x1, y1), (x2, y2) = [tuple(int(v) for v in re.findall(r'-?\d+', p)) for p in (m.group(2), m.group(3))]
+                    x1, x2 = sorted((x1, x2)); y1, y2 = sorted((y1, y2))
+                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    hw, hh = max((x2 - x1) // 2, top_side // 2), max((y2 - y1) // 2, top_side // 2)
+                    return f'{m.group(0)} + LAYER {top_layer} ( {cx - hw} {cy - hh} ) ( {cx + hw} {cy + hh} )'
+                st = re.sub(shape, copy, st)
+                pins_top.append(st.split()[1])
         return st
 
     def layer_stmt(st):   # BLOCKAGES / FILLS: '- LAYER name ...' or '- VIA name ...' statements
@@ -429,6 +449,9 @@ def sanitize(def_path, lefs, drop=None):
                      f'(e.g. {", ".join(sorted(set(other_fixes))[:4])})')
     if bad_layers:
         notes.append(f'wiring on layer(s) the LEF does not define ({", ".join(sorted(bad_layers)[:4])}) is left out')
+    if pins_top:
+        notes.append(f'{len(pins_top)} I/O pin(s) only above {top_layer} (e.g. {", ".join(pins_top[:3])}): '
+                     f'a copy of the shape on {top_layer} is added so the router can reach them')
     if to_routed:
         notes.append(f'{len(to_routed)} signal net(s) have FIXED / COVER wiring: written as ROUTED in the copy so they can be rerouted')
     if n_mask:
