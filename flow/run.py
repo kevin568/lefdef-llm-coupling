@@ -520,8 +520,13 @@ def s4_route(case, out, st):
                for c in P['candidates'] if c['kind'] == 'default']
     (st.dir / 'routed.json').write_text(json.dumps(dict(routed=routed, failures=failures), indent=1))
     st.info.update(routed=len(routed), failures=len(failures))
-    if failures and len(failures) == len(jobs):
-        raise C.StageError(f'every route failed; first log: {failures[0]["log"]}')
+    if failures:
+        logs = [f['log'] for f in failures]
+        diag = route_diagnosis(logs, st.dir / 'diagnosis.txt') or route_errors(logs)
+        if len(failures) == len(jobs):
+            raise C.StageError(f'every guided route failed ({len(failures)}); first log: {failures[0]["log"]}\n'
+                               f'  first error: {failures[0]["error"][:600]}\n{diag}')
+        print(f'  note: {len(failures)} of {len(jobs)} guided route(s) failed (first log: {failures[0]["log"]})\n{diag}')
 
 
 def s5_extract(case, out, st):
