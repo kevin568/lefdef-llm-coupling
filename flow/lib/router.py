@@ -35,8 +35,8 @@ ORIENTS = ('N', 'S', 'E', 'W', 'FN', 'FS', 'FE', 'FW')
 
 class NoPath(RuntimeError):
     """a net that cannot be connected; pin = (inst, pin) where it failed (None: the net as a whole)"""
-    def __init__(self, msg, pin=None):
-        RuntimeError.__init__(self, msg); self.pin = pin
+    def __init__(self, msg, pin=None, also=None):
+        RuntimeError.__init__(self, msg); self.pin = pin; self.also = also   # also: the other end (the pin the path started from)
 
 
 def orient_pt(x, y, w, h, o):
@@ -47,6 +47,23 @@ def orient_pt(x, y, w, h, o):
 def orient_off(a, b, o):
     return {'N': (a, b), 'S': (-a, -b), 'W': (-b, a), 'E': (b, -a),
             'FN': (-a, b), 'FS': (a, -b), 'FW': (b, a), 'FE': (-b, -a)}.get(o, (a, b))
+
+
+def poly_rects(v):
+    """rectangles covering a polygon given as flat [x1, y1, x2, y2, ...] (rectilinear: exact; slabs between the
+    vertex y values, inside by the even-odd rule at the slab middle); not rectilinear: its bounding box"""
+    P = list(zip(v[0::2], v[1::2]))
+    if len(P) >= 2 and P[0] == P[-1]:
+        P = P[:-1]
+    E = list(zip(P, P[1:] + P[:1]))
+    if len(P) < 4 or any(a[0] != b[0] and a[1] != b[1] for a, b in E):
+        return [(min(v[0::2]), min(v[1::2]), max(v[0::2]), max(v[1::2]))]
+    ys = sorted({p[1] for p in P}); out = []
+    for y0, y1 in zip(ys, ys[1:]):
+        ym = (y0 + y1) / 2.
+        xs = sorted(a[0] for a, b in E if a[0] == b[0] and min(a[1], b[1]) < ym < max(a[1], b[1]))
+        out += [(xs[k], y0, xs[k + 1], y1) for k in range(0, len(xs) - 1, 2) if xs[k + 1] > xs[k]]
+    return out or [(min(v[0::2]), min(v[1::2]), max(v[0::2]), max(v[1::2]))]
 
 
 def _num(s, d=0.):
@@ -124,7 +141,8 @@ class Tech(object):
             if m and layer:
                 v = [float(x) for x in m.group(2).split()]
                 if len(v) >= 4:
-                    out.append((layer, (min(v[0::2]), min(v[1::2]), max(v[0::2]), max(v[1::2]))))
+                    rs = poly_rects(v) if m.group(1) == 'POLYGON' else [(min(v[0::2]), min(v[1::2]), max(v[0::2]), max(v[1::2]))]
+                    out += [(layer, r) for r in rs]
         return out
 
     def via_for(self, lo, hi):
@@ -180,6 +198,27 @@ class Design(object):
         self.nets = {}      # name -> dict(conns, shapes [(layer, rect)], span (start, end) in text, use)
         self.special = []   # [(layer, rect)]
         self._nets()
+        self.blockages = []   # DEF BLOCKAGES on layers: [(layer, rect dbu, component or '', id blockage#k)]
+        for st in self._stmts('BLOCKAGES'):
+            tk = TOK.findall(st)
+            if len(tk) < 3 or tk[1] != 'LAYER':
+                continue   # placement blockages do not block wires
+            lay = tk[2]; comp = tk[tk.index('COMPONENT') + 1] if 'COMPONENT' in tk else ''
+            i = 3
+            while i < len(tk):
+                if tk[i] in ('RECT', 'POLYGON'):
+                    j = i + 1; v = []
+                    while j < len(tk) and tk[j] not in ('RECT', 'POLYGON', '+', ';'):
+                        if re.match(r'^-?\d+$', tk[j]):
+                            v.append(int(tk[j]))
+                        j += 1
+                    if len(v) >= 4:
+                        rs = poly_rects(v) if tk[i] == 'POLYGON' else [(min(v[0::2]), min(v[1::2]), max(v[0::2]), max(v[1::2]))]
+                        k = len({x[3] for x in self.blockages})
+                        self.blockages += [(lay, r, comp, f'blockage#{k}') for r in rs]
+                    i = j; continue
+                i += 1
+        self.drop = []   # obstacle drop specs (see obstacle_items / drop_match)
 
     def _section_span(self, name):
         m = re.search(r'^[ \t]*' + name + r'[ \t]+\d+[ \t]*;[^\n]*\n', self.text, re.M)
@@ -373,45 +412,63 @@ class Design(object):
                                 int(round(loc[0] + max(p1[0], p2[0]) * u)), int(round(loc[1] + max(p1[1], p2[1]) * u)))))
         return out
 
-    def obstacles_labeled(self, skip_net):
-        """[(layer, rect, owner)]: as obstacles(), with what each shape belongs to"""
-        out = [(l, r, 'special net (power/ground)') for l, r in self.special]
+    def obstacle_items(self, skip_net):
+        """every shape the reroute of skip_net must keep spacing to: [(layer, rect, owner label, kind, inst, macro)];
+        kind: special | net | obs (LEF cell OBS) | pin (another net's cell pin) | iopin | blockage (DEF BLOCKAGES)"""
+        out = [(l, r, 'special net (power/ground)', 'special', '', '') for l, r in self.special]
         own = set(self.nets.get(skip_net, {}).get('conns', []))
         for n, v in self.nets.items():
             if n != skip_net:
-                out += [(l, r, f'net {n}') for l, r in v['shapes']]
+                out += [(l, r, f'net {n}', 'net', '', '') for l, r in v['shapes']]
         for inst, (mac, loc) in self.comps.items():
             M = self.tech.macros.get(mac)
             if not M or not loc:
                 continue
-            out += [(l, r, f'{inst} OBS') for l, r in self._place(M, M['obs'], loc)]
+            out += [(l, r, f'{inst} OBS', 'obs', inst, mac) for l, r in self._place(M, M['obs'], loc)]
             for pin, shapes in M['pins'].items():
                 if (inst, pin) not in own:
-                    out += [(l, r, f'pin {inst}/{pin}') for l, r in self._place(M, shapes, loc)]
+                    out += [(l, r, f'pin {inst}/{pin}', 'pin', inst, mac) for l, r in self._place(M, shapes, loc)]
         for pin, shapes in self.iopins.items():
             if ('PIN', pin) not in own:
-                out += [(l, r, f'I/O pin {pin}') for l, r in shapes]
+                out += [(l, r, f'I/O pin {pin}', 'iopin', '', '') for l, r in shapes]
+        out += [(l, r, f'DEF {k}' + (f' of {c}' if c else ''), 'blockage', k, '') for l, r, c, k in self.blockages]
         return out
 
-    def obstacles(self, skip_net):
-        """[(layer, rect)] every shape the reroute of skip_net must keep spacing to"""
-        out = list(self.special)
-        own = set(self.nets.get(skip_net, {}).get('conns', []))
-        for n, v in self.nets.items():
-            if n != skip_net:
-                out += v['shapes']
-        for inst, (mac, loc) in self.comps.items():
-            M = self.tech.macros.get(mac)
-            if not M or not loc:
+    def drop_match(self, it, skip_net, specs=None):
+        """is this obstacle item dropped by the specs (default self.drop)? A spec is one of
+        all (every cell OBS) | LAYER (cell OBS on that layer) | own[:LAYER] (OBS of the cells the net connects to) |
+        inst=NAME[:LAYER] | MACRO[:LAYER] (cell OBS of a LEF macro; * and ? allowed) | blockage[:LAYER] (DEF BLOCKAGES) |
+        blockage#K (the K-th DEF blockage, numbered from 0 as in the diagnosis)"""
+        from fnmatch import fnmatchcase
+        fm = lambda v, pat: v == pat or fnmatchcase(v, pat)   # names with [ ] (buses) match exactly
+        l, _, _, kind, inst, mac = it
+        for s in (self.drop if specs is None else specs):
+            a, _, b = s.partition(':')
+            if b and not fm(l, b):
                 continue
-            out += self._place(M, M['obs'], loc)
-            for pin, shapes in M['pins'].items():
-                if (inst, pin) not in own:
-                    out += self._place(M, shapes, loc)
-        for pin, shapes in self.iopins.items():
-            if ('PIN', pin) not in own:
-                out += shapes
-        return out
+            if a == 'blockage' or a.startswith('blockage#'):   # every DEF blockage, or one by its number
+                if kind == 'blockage' and (a == 'blockage' or inst == a):
+                    return True
+                continue
+            if kind != 'obs':
+                continue
+            if a == 'all' or (a in self.tech.types and not b and l == a):
+                return True
+            if a == 'own' and inst in {i for i, _ in self.nets.get(skip_net, {}).get('conns', [])}:
+                return True
+            if a.startswith('inst=') and fm(inst, a[5:]):
+                return True
+            if a not in ('all', 'own') and not a.startswith('inst=') and a not in self.tech.types and fm(mac, a):
+                return True
+        return False
+
+    def obstacles_labeled(self, skip_net):
+        """[(layer, rect, owner)] of every obstacle (dropped ones included: for the diagnosis)"""
+        return [(l, r, o) for l, r, o, _, _, _ in self.obstacle_items(skip_net)]
+
+    def obstacles(self, skip_net):
+        """[(layer, rect)] every shape the reroute of skip_net must keep spacing to (without the dropped OBS)"""
+        return [(it[0], it[1]) for it in self.obstacle_items(skip_net) if not (self.drop and self.drop_match(it, skip_net))]
 
 
 # ---------------------------------------------------------------------------------------------------- routing
@@ -668,7 +725,7 @@ class Router(object):
                     lay = sorted({self.L[k] for k, _, _ in nodes})
                     return f'{len(nodes)} access node(s) on {"/".join(lay)}, {free} free neighbour(s)'
                 raise NoPath(f'{net}: no path to pin {pins[ti][0][0]}/{pins[ti][0][1]} ({why(list(goal))}; '
-                             f'from {pins[0][0][0]}/{pins[0][0][1]}: {why(list(first))}; grid {nx}x{ny}x{L}, pitch {self.P})', pins[ti][0])
+                             f'from {pins[0][0][0]}/{pins[0][0][1]}: {why(list(first))}; grid {nx}x{ny}x{L}, pitch {self.P})', pins[ti][0], pins[0][0])
             if not path_nodes:
                 tree = set()
                 if first.get(p[0]):
@@ -832,6 +889,95 @@ def _rdist(a, b):
 
 
 _AUDIT = {}
+GROUP = {'obs': 'cell OBS (LEF)', 'blockage': 'DEF blockage', 'net': 'other nets', 'pin': 'other pins', 'iopin': 'other pins',
+         'special': 'power/ground'}
+
+
+def access_block(D, R, net, sh):
+    """what keeps a via landing out over the pin: sample points on the pin shapes, and per layer (the pin's layers and
+    the lowest signal layer above) the share of points where a via pad would be within spacing of each obstacle.
+    Dropped OBS (D.drop) are left out. -> [dict(layer, n, blocked, groups {group: share}, owners [(share, owner, kind,
+    inst)], under (share of points inside cell OBS, pin layers only))]"""
+    T, u = D.tech, D.dbu
+    items = [it for it in D.obstacle_items(net) if not (D.drop and D.drop_match(it, net))]
+    pts = []
+    step = max(1, R.P // 2)
+    for _, r in sh:
+        nx_ = max(1, min(9, (r[2] - r[0]) // step)); ny_ = max(1, min(9, (r[3] - r[1]) // step))
+        pts += [(r[0] + (r[2] - r[0]) * (a + .5) / nx_, r[1] + (r[3] - r[1]) * (b + .5) / ny_) for a in range(nx_) for b in range(ny_)]
+    vn = T.via_for(R.below, R.L[0]) if R.below else None
+    out = []
+    for lay in [l for l in dict.fromkeys([a[0] for a in sh] + [R.L[0]]) if l in T.routing]:
+        Rl = T.routing[lay]; sp = Rl['spacing'] * u
+        hp = max([Rl['width'] * u / 2] + [max(r[2] - r[0], r[3] - r[1]) * u / 2 for ll, r in T.vias.get(vn, []) if ll == lay])
+        g = hp + sp
+        bx = (min(p[0] for p in pts) - g, min(p[1] for p in pts) - g, max(p[0] for p in pts) + g, max(p[1] for p in pts) + g)
+        near = [it for it in items if it[0] == lay and it[1][0] < bx[2] and bx[0] < it[1][2] and it[1][1] < bx[3] and bx[1] < it[1][3]]
+        per, grp, nb, under = {}, {}, 0, 0
+        for x, y in pts:
+            hit = [it for it in near if it[1][0] < x + g and x - g < it[1][2] and it[1][1] < y + g and y - g < it[1][3]]
+            nb += bool(hit)
+            for k in {GROUP[it[3]] for it in hit}:
+                grp[k] = grp.get(k, 0) + 1
+            for it in {(it[2], it[3], it[4]) for it in hit}:
+                per[it] = per.get(it, 0) + 1
+            under += any(it[3] == 'obs' and it[1][0] < x < it[1][2] and it[1][1] < y < it[1][3] for it in near)
+        n = len(pts) or 1
+        out.append(dict(layer=lay, n=len(pts), blocked=nb / n, groups={k: v / n for k, v in grp.items()},
+                        owners=sorted(((v / n, o, kd, i) for (o, kd, i), v in per.items()), reverse=True),
+                        under=under / n if lay in {a[0] for a in sh} else 0.))
+    return out
+
+
+def obs_audit(D):
+    """design-wide: how much of the cells the LEF OBS covers, how many connected pins lie under their own cell's OBS,
+    and where the original wiring itself overlaps cell OBS / DEF blockages"""
+    if 'o' in _AUDIT:
+        return _AUDIT['o']
+    T = D.tech; cov = {}; under = []; tot = 0
+    for inst, (mac, loc) in D.comps.items():
+        M = T.macros.get(mac)
+        if not M or not loc or not M['obs']:
+            continue
+        w, h = M['size']; area = max(w * h, 1e-12)
+        for l in {l for l, _ in M['obs'] if l in T.routing}:
+            a = sum((r[2] - r[0]) * (r[3] - r[1]) for ll, r in M['obs'] if ll == l)   # overlaps counted twice: an upper bound
+            cov.setdefault(l, {})[mac] = min(1., a / area)
+    for n, v in D.nets.items():
+        if v['use'] in ('POWER', 'GROUND'):
+            continue
+        for inst, pin in v['conns']:
+            mac, loc = D.comps.get(inst, (None, None))
+            M = T.macros.get(mac)
+            if not M or not loc:
+                continue
+            ps = D.pin_shapes(inst, pin); tot += bool(ps)
+            ob = D._place(M, M['obs'], loc)
+            if any(a[0] == o[0] and a[1][0] < o[1][2] and o[1][0] < a[1][2] and a[1][1] < o[1][3] and o[1][1] < a[1][3] for a in ps for o in ob):
+                under.append(f'{inst}/{pin} ({mac})')
+    places, nets = 0, set()
+    blk = {}
+    for inst, (mac, loc) in D.comps.items():
+        M = T.macros.get(mac)
+        if M and loc and M['obs']:
+            for l, r in D._place(M, M['obs'], loc):
+                blk.setdefault(l, []).append(r)
+    for l, r, _, _ in D.blockages:
+        blk.setdefault(l, []).append(r)
+    C = 4096; idx = {}   # bucket index of the OBS / blockage rects
+    for l, rs in blk.items():
+        for r in rs:
+            for bx in range(r[0] // C, r[2] // C + 1):
+                for by in range(r[1] // C, r[3] // C + 1):
+                    idx.setdefault((l, bx, by), []).append(r)
+    for n, v in D.nets.items():
+        for l, r in v['shapes']:
+            if l in T.routing and any(r[0] < o[2] and o[0] < r[2] and r[1] < o[3] and o[1] < r[3]
+                                      for bx in range(r[0] // C, r[2] // C + 1) for by in range(r[1] // C, r[3] // C + 1)
+                                      for o in idx.get((l, bx, by), ())):
+                places += 1; nets.add(n)
+    _AUDIT['o'] = dict(cov=cov, under=under, pins=tot, places=places, nets=sorted(nets))
+    return _AUDIT['o']
 
 
 def audit(D):
@@ -855,14 +1001,28 @@ def audit(D):
     return _AUDIT['r']
 
 
-def diagnose(D, R, net, pin):
+def diagnose(D, R, net, pin, info=None):
     """why a pin of the net cannot be connected: (verdict, reason, evidence lines). verdict: TESTCASE (the input layout),
     LEF/DEF (the LEF does not match the DEF, or the flow places cells wrongly), ROUTER (this router)"""
     T, u = D.tech, D.dbu
     um = lambda v: f'{v / u:.3f}'
     hit, tot, miss = audit(D)
-    ev = [f'original layout: {hit} of {tot} pin connections in the design are reached by their own net\'s wiring'
+    ev = [f'[design] original layout: {hit} of {tot} pin connections in the design are reached by their own net\'s wiring'
           + (f' (not reached e.g. {", ".join(miss)})' if miss else '')]
+    oa = obs_audit(D)
+    if oa['cov'] or D.blockages:
+        lays = ', '.join(f'{l}: {len(m)} cell type(s), up to {100 * max(m.values()):.0f}% of the cell area'
+                         for l, m in sorted(oa['cov'].items(), key=lambda kv: T.rorder.index(kv[0])))
+        ev.append(f'[design] LEF OBS on routing layers: {lays or "none"}; {len(oa["under"])} of {oa["pins"]} connected cell pins overlap '
+                  f'their own cell\'s OBS' + (f' (e.g. {", ".join(oa["under"][:3])})' if oa['under'] else '')
+                  + f'; the original wiring overlaps cell OBS / DEF blockages at {oa["places"]} place(s) in {len(oa["nets"])} net(s)'
+                  + (f' (e.g. {", ".join(oa["nets"][:3])})' if oa['nets'] else '')
+                  + (f'; DEF BLOCKAGES: {len({b[3] for b in D.blockages})} on {", ".join(sorted({b[0] for b in D.blockages}))}' if D.blockages else ''))
+    if D.drop:
+        ev.append(f'already ignored for this net: OBS matching {", ".join(D.drop)}')
+    if info is None:
+        info = {}
+    info.setdefault('obs', set())
     if pin is None:   # the net as a whole: list the pins without routing-layer shapes
         bad = [f'{i}/{p}' for i, p in D.nets[net]['conns'] if not [1 for l, _ in D.pin_shapes(i, p) if l in T.routing]]
         return 'LEF/DEF', f'{len(bad)} pin(s) of {net} have no shape on a routing layer ({", ".join(bad[:6])})', ev
@@ -899,6 +1059,24 @@ def diagnose(D, R, net, pin):
     near = [t for _, t in sorted(near)[:6]]
     if near:
         ev.append('closest other shapes (plan-view gap to the pin; 0 = over or touching it): ' + '; '.join(near))
+    # what keeps the via landings out over the pin, per layer
+    ab = access_block(D, R, net, sh)
+    info['blocked'] = max((x['blocked'] for x in ab), default=0.)
+    pct = lambda v: f'{100 * v:.0f}%'
+    for x in ab:
+        ev.append(f'via landings over the pin on {x["layer"]} ({x["n"]} points): {pct(x["blocked"])} blocked'
+                  + (' (' + ', '.join(f'{k} {pct(v)}' for k, v in sorted(x['groups'].items(), key=lambda kv: -kv[1])) + ')' if x['groups'] else '')
+                  + (': ' + '; '.join(f'{o} {pct(s)}' for s, o, _, _ in x['owners'][:4]) if x['owners'] else '')
+                  + (f'; {pct(x["under"])} of the pin lies inside cell OBS' if x['under'] else ''))
+        for s, o, kd, i in x['owners']:
+            if kd == 'obs':
+                info['obs'].add((i, x['layer']))
+            if kd == 'blockage':
+                info.setdefault('blk', set()).add(i)
+    ownov = sorted({o for c in own for l, r, o, kd, _, _ in D.obstacle_items(net) if kd in ('obs', 'blockage') and l == c[0]
+                    and r[0] < c[1][2] and c[1][0] < r[2] and r[1] < c[1][3] and c[1][1] < r[3]})
+    if ownov:
+        ev.append(f'the original wiring of {net} itself overlaps {", ".join(ownov[:4])}: the input layout does not keep to these')
     if not touched:
         same = [(_rdist(a[1], c[1]), c[0]) for a in sh for c in own if a[0] == c[0]]
         dtxt = f'nearest wire of {net} on the same layer {um(min(same)[0])} um away on {min(same)[1]}' if same else \
@@ -927,8 +1105,32 @@ def diagnose(D, R, net, pin):
                             f'the pin is not connected in the input DEF either'), ev
     if shorts:
         return 'TESTCASE', f'the pin overlaps {", ".join(shorts[:4])} in the original layout (a short in the input)', ev
-    return 'ROUTER', (f'the original wiring reaches this pin, but this router finds no legal way to it: every access point '
-                      f'it tries is within spacing of other shapes (closest listed below)'), ev
+    wall = [x for x in ab if x['blocked'] >= .9]
+    for kind, grp in (('obs', 'cell OBS (LEF)'), ('blockage', 'DEF blockage')):
+        top = max(wall, key=lambda x: x['groups'].get(grp, 0), default=None)
+        if not top or top['groups'].get(grp, 0) < .9:
+            continue
+        who = [f'{o} {pct(s)}' for s, o, kd, _ in top['owners'] if kd == kind][:3]
+        under = max((x['under'] for x in ab), default=0)
+        mine = [o for o in ownov if o.startswith(tuple(w.split(' ')[0] for w in who))]
+        if kind == 'obs':
+            return 'LEF/DEF', (f'the LEF OBS blocks the pin: on {top["layer"]} {pct(top["groups"][grp])} of the via landings over '
+                               f'{inst}/{pn} are within spacing of cell OBS ({", ".join(who)})'
+                               + (f', and {pct(under)} of the pin lies inside OBS' if under else '')
+                               + (f'; the original wiring of {net} overlaps that OBS too, so the input layout itself does not keep to it'
+                                  if mine else '')
+                               + ': the OBS in the LEF covers the pin access (LEF definition, not a routing problem); '
+                                 'the flow can ignore that OBS (--drop-obs)'), ev
+        return 'TESTCASE', (f'a DEF routing blockage covers the pin: on {top["layer"]} {pct(top["groups"][grp])} of the via landings '
+                            f'over {inst}/{pn} are within spacing of {", ".join(who)} (BLOCKAGES section of the input DEF); the flow can ignore it (--drop-obs)'), ev
+    if wall:
+        x = wall[0]
+        return 'ROUTER', (f'the original wiring reaches this pin, but on {x["layer"]} {pct(x["blocked"])} of the via landings over it '
+                          f'are within spacing of other shapes, mostly ' + ', '.join(f'{k} {pct(v)}' for k, v in
+                                                                                  sorted(x['groups'].items(), key=lambda kv: -kv[1])[:2])
+                          + ': the pin is reachable in the original layout only through spacing this router does not allow'), ev
+    return 'ROUTER', (f'the original wiring reaches this pin and part of the pin is free, but this router finds no legal path '
+                      f'to the free part (the closest shapes are listed below)'), ev
 
 
 def _touch(a, b):
@@ -973,6 +1175,54 @@ def split_terminals(D, R, name, min_pitches=3):
     return terms, out, f'kept {len(kept)} of {len(pcs)} wiring pieces (those < {min_pitches} pitches), {len(terms)} parts to connect'
 
 
+def route_one(D, R, name, g, mode, logl):
+    """one net: full rip-up, else (auto) partial rip-up keeping the pin access -> (pieces, shapes, how)"""
+    try:
+        if mode == 'partial':
+            raise RuntimeError('ROUTER_MODE=partial')
+        pieces, shapes = R.route_net(name, g)
+        return pieces, shapes, 'full rip-up'
+    except RuntimeError as e1:
+        if mode == 'full':
+            raise
+        errs = []; last = None; cands = [getattr(e1, 'pin', None), getattr(e1, 'also', None)]
+        for mp in (3, 8, 20):   # keep the short pieces first; if that fails, keep longer ones (less is rerouted)
+            try:
+                terms, kept, how = split_terminals(D, R, name, mp)
+                pieces, shapes = R.route_net(name, g, terms=terms)
+                break
+            except RuntimeError as e2:
+                errs.append(f'keeping pieces < {mp} pitches: {e2}'); last = e2 if getattr(e2, 'pin', None) else last
+                cands += [getattr(e2, 'pin', None), getattr(e2, 'also', None)]
+        else:
+            src = e1 if getattr(e1, 'pin', None) else last
+            e = NoPath(f'{e1} | ' + ' | '.join(errs), getattr(src, 'pin', None), getattr(src, 'also', None))
+            e.cands = [c for c in dict.fromkeys(cands) if c]   # every pin an attempt stopped at
+            raise e
+        logl.append(f'FLOW {name}: full rip-up not possible ({e1}); {how}')
+        return kept + pieces, shapes, how
+
+
+RANK = {'TESTCASE': 0, 'LEF/DEF': 0, 'ROUTER': 1}
+
+
+def diagnose_pins(D, R, name, e):
+    """diagnose the pins the attempts (full and partial rip-up) could not reach or started from; the one with an
+    input-side cause (else the most blocked one) is reported -> (verdict, why, evidence, pin, info)"""
+    best = None
+    for pin in list(dict.fromkeys([e.pin, getattr(e, 'also', None)] + getattr(e, 'cands', [])))[:6]:
+        if pin is None and best is not None:
+            continue
+        info = {}
+        v, w, ev = diagnose(D, R, name, pin, info)
+        if pin is not None and pin != e.pin:
+            w = f'(where {"an attempt" if pin != getattr(e, "also", None) else "the path"} stopped or started) {w}'
+        key = (RANK.get(v, 1), -info.get('blocked', 0.), -len(info.get('obs', ())))
+        if best is None or key < best[0]:
+            best = (key, v, w, ev, pin, info)
+    return best[1:]
+
+
 def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None, guide_out=None):
     t0 = time.time()
     T = Tech(lefs)
@@ -996,37 +1246,53 @@ def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None
     logl += [f'GCELLGRID X {gx[0]} DO {gx[1]} STEP {gx[2]}', f'GCELLGRID Y {gy[0]} DO {gy[1]} STEP {gy[2]}']
     gtxt = []
     edits = []
+    spec = __import__('os').environ.get('ROUTER_DROP_OBS', 'auto').strip()   # auto | off | spec,spec (see Design.drop_match)
+    parts = [x for x in re.split(r'[,\s]+', spec) if x]
+    drop_auto = 'auto' in parts
+    fixed_drop = [x for x in parts if x not in ('auto', 'off', 'none')]
+    if fixed_drop:
+        logl.append(f'FLOW ignoring OBS for every net: {", ".join(fixed_drop)}')
     for net in nets:
         name = net if net in D.nets else next((n for n in D.nets if n.replace('\\', '') == net), None)
         if name is None:
             raise RuntimeError(f'FLOW_ERROR net not found: {net}')
         g = guides.get(net) or guides.get(name)
         mode = __import__('os').environ.get('ROUTER_MODE', 'auto')   # auto: full rip-up, else keep the pin access
-        how = 'full rip-up'
-        try:
+        D.drop = list(fixed_drop)
+        tried = []   # (drop specs, failure diagnosis) of the attempts before the one that routed
+        while True:
             try:
-                if mode == 'partial':
-                    raise RuntimeError('ROUTER_MODE=partial')
-                pieces, shapes = R.route_net(name, g)
-            except RuntimeError as e1:
-                if mode == 'full':
+                pieces, shapes, how = route_one(D, R, name, g, mode, logl)
+                break
+            except NoPath as e:
+                verdict, why, ev, pin, info = diagnose_pins(D, R, name, e)
+                e.diag = [f'DIAG {name} pin {"/".join(pin) if pin else "-"}: {verdict}: {why}'] + [f'DIAG   {x}' for x in ev]
+                new = [f'inst={i}:{l}' for i, l in sorted(info['obs'])] + sorted(info.get('blk', ()))
+                new = [s for s in new if s not in D.drop]
+                e.diag += [f'DIAG   before: ignoring {", ".join(d) or "nothing"} also failed: {w}' for d, w in tried]
+                if not drop_auto or len(tried) >= 6 or not (verdict == 'ROUTER' or 'LEF OBS' in why or 'DEF routing blockage' in why):
+                    raise   # an input-side cause that ignoring OBS cannot fix (open, short, orientation, missing cell)
+                if not new:   # no OBS / blockage over the pins left to blame: ignoring more would not help
                     raise
-                errs = []; lastpin = None
-                for mp in (3, 8, 20):   # keep the short pieces first; if that fails, keep longer ones (less is rerouted)
-                    try:
-                        terms, kept, how = split_terminals(D, R, name, mp)
-                        pieces, shapes = R.route_net(name, g, terms=terms)
-                        break
-                    except RuntimeError as e2:
-                        errs.append(f'keeping pieces < {mp} pitches: {e2}'); lastpin = getattr(e2, 'pin', None) or lastpin
-                else:
-                    raise NoPath(f'{e1} | ' + ' | '.join(errs), getattr(e1, 'pin', None) or lastpin)
-                logl.append(f'FLOW {name}: full rip-up not possible ({e1}); {how}')
-                pieces = kept + pieces
-        except NoPath as e:
-            verdict, why, ev = diagnose(D, R, name, e.pin)
-            e.diag = [f'DIAG {name} pin {"/".join(e.pin) if e.pin else "-"}: {verdict}: {why}'] + [f'DIAG   {x}' for x in ev]
-            raise
+                tried.append((list(D.drop), e.diag[0][5:]))
+                D.drop += new
+        if D.drop:
+            hit = [it for it in D.obstacle_items(name) if D.drop_match(it, name)]
+            ov = sp_ = 0; who = {}
+            for l, r in shapes:
+                Rl = T.routing.get(l); s_ = int(round(Rl['spacing'] * D.dbu)) if Rl else 0
+                for it in hit:
+                    o = it[1]
+                    if it[0] == l and r[0] < o[2] + s_ and o[0] < r[2] + s_ and r[1] < o[3] + s_ and o[1] < r[3] + s_:
+                        if r[0] < o[2] and o[0] < r[2] and r[1] < o[3] and o[1] < r[3]:
+                            ov += 1
+                        else:
+                            sp_ += 1
+                        who[f'{it[2]} on {l}'] = 1
+            logl.append(f'FLOW relaxation {name}: routed while ignoring {", ".join(D.drop)} '
+                        f'({len(hit)} OBS / blockage shape(s)); the new wiring overlaps them at {ov} place(s) and is within spacing of them '
+                        f'at {sp_}' + (f' ({", ".join(list(who)[:6])})' if who else ''))
+            logl += [f'RELAX   attempt {k + 1} (ignoring {", ".join(d) or "nothing"}) failed: {why}' for k, (d, why) in enumerate(tried)]
         viol += self_check(shapes, D.obstacles(name), T, D.dbu, name)
         s, e = D.nets[name]['span']
         st = text[s:e]

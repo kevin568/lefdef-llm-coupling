@@ -12,6 +12,7 @@ s6_apply commits the accepted reroutes one after another into one layout: out/<c
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -123,16 +124,33 @@ def route_diagnosis(logs, out_file, show=4):
         v = h.split(': ')[1] if ': ' in h else '?'
         cnt[v] = cnt.get(v, 0) + 1
     w = lambda t, ind: textwrap.fill(t, 150, initial_indent=ind, subsequent_indent=ind + '  ')
-    out = ['  why these nets cannot be connected (TESTCASE = the input layout itself, LEF/DEF = the LEF does not match the DEF '
-           "or the flow places cells wrongly, ROUTER = this flow's router): "
+    out = ['  why these nets cannot be connected (TESTCASE = the input layout itself, LEF/DEF = the LEF does not match the DEF, '
+           "a LEF OBS covers the pin, or the flow places cells wrongly, ROUTER = this flow's router): "
            + ', '.join(f'{n} {k}' for k, n in sorted(cnt.items(), key=lambda kv: -kv[1]))]
-    if rows[0][1]:
-        out.append(w(rows[0][1][0], '    '))   # design-wide line (same for every net)
+    out += [w(e[9:], '    ') for e in rows[0][1] if e.startswith('[design] ')]   # design-wide lines (same for every net)
     for h, ev, _ in rows[:show]:
         out.append(w(h, '    '))
-        out += [w(e, '        ') for e in ev[1:3]]
+        out += [w(e, '        ') for e in [e for e in ev if not e.startswith('[design] ')
+                                         and not e.startswith('closest other shapes')][:3]]
     out.append(f'    all {len(rows)} net(s) with evidence: {out_file}')
     return '\n'.join(out)
+
+
+def relaxation_note(logs, out_file):
+    """nets the built-in router connected only by ignoring cell OBS (FLOW relaxation lines): a note, all in out_file"""
+    rows = []
+    for lg in logs:
+        try:
+            L = Path(lg).read_text(errors='replace').splitlines()
+        except OSError:
+            continue
+        rows += [(x[len('FLOW relaxation '):], [y[8:] for y in L if y.startswith('RELAX   ')], str(lg))
+                 for x in L if x.startswith('FLOW relaxation ')]
+    if not rows:
+        return ''
+    Path(out_file).write_text(''.join(f'{h}\n' + ''.join(f'    {e}\n' for e in ev) + f'    log: {lg}\n\n' for h, ev, lg in rows))
+    return (f'  note: {len(rows)} net(s) were connected only by ignoring the LEF cell OBS or DEF blockages over their pins (relaxation, '
+            f'e.g. {rows[0][0][:220]}); all with the original cause: {out_file}')
 
 
 def try_route(case, state_def, net, rundir):
@@ -368,6 +386,10 @@ def s2_candidates(case, out, st):
         if diag:
             print(diag)
     st.info['route_failed_nets'] = bad
+    rx = relaxation_note([pdirs[n] / 'route.log' for n in nets], d / 'relaxation.txt')
+    if rx:
+        print(rx)
+    st.info['obs_relaxed_nets'] = int(rx.split()[1]) if rx else 0
     # pre-existing DRC violations: reported by every router-default reroute (>= 2 nets) or by the last normalize run;
     # they are tolerated for your own layouts unless --strict (tolerate_baseline_drc in cases.json)
     sets = [set(G.violations(pdirs[n] / 'drc.rpt')) for n in nets]
@@ -773,6 +795,11 @@ def main():
     ap.add_argument('--router', default='auto', choices=['auto', 'openroad', 'builtin'],
                     help='reroutes: OpenROAD detailed router, or the built-in track router (flow/lib/router.py); '
                          'auto: OpenROAD unless it rejects the design')
+    ap.add_argument('--drop-obs', default='auto', metavar='auto|off|SPEC,...',
+                    help='built-in router: LEF cell OBS to ignore. auto (default): when a net cannot be connected because '
+                         'an OBS blocks its pins, ignore exactly those OBS for that net and report it (relaxation.txt); '
+                         'off: never; or specs for every net: a layer (M1), own (OBS of the net\'s own cells), MACRO[:LAYER], '
+                         'inst=NAME[:LAYER], all, blockage[:LAYER] (DEF BLOCKAGES)')
     ap.add_argument('--route', default='best', choices=['best', 'all'], help='best: policy top-1 per net; all: every candidate')
     ap.add_argument('--from', dest='start', choices=STAGES, help='re-run from this stage')
     ap.add_argument('--only', choices=STAGES, help='run a single stage')
@@ -780,6 +807,7 @@ def main():
     ap.add_argument('--jobs', type=int, default=3); ap.add_argument('--threads', type=int, default=4)
     ap.add_argument('--cases', default=None, help='alternative cases.json')
     ARGS = ap.parse_args()
+    os.environ['ROUTER_DROP_OBS'] = ARGS.drop_obs   # read by flow/lib/router.py (its own process)
     try:
         first = ARGS.inputs[0]
         if ARGS.def_file or first.lower().endswith(('.def', '.def.gz')):
@@ -808,6 +836,8 @@ def main():
     fp = dict(def_sha256=C.sha256(case['def']), lef_sha256=[C.sha256(l) for l in case['lefs']], layers=case['layers'],
               rules_sha256='proxy' if case['rules'] == 'proxy' else C.sha256(case['rules']), nets=case.get('net_regex'), pool_nets=case.get('pool_nets'),
               normalize=case.get('normalize'), tolerate_baseline_drc=bool(case.get('tolerate_baseline_drc')))
+    if ARGS.drop_obs != 'auto':
+        fp['drop_obs'] = ARGS.drop_obs
     fpf = out / 'inputs.json'
     if fpf.exists() and json.loads(fpf.read_text()) != fp:
         old = json.loads(fpf.read_text())

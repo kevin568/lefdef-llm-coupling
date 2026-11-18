@@ -51,6 +51,22 @@ pins of the design unreached; the flow's own cell placement is named as a possib
 original wiring reaches the pin, but this router finds no legal access; the closest other shapes are listed). Every
 diagnosis also states how many pin connections of the whole design the original wiring reaches.
 
+OBS and blockages: for the failing pin the diagnosis samples the via landings over it and says, per layer (the pin
+layer and the lowest signal layer), which share each obstacle blocks (cell OBS from the LEF, DEF BLOCKAGES, other nets,
+other pins, power), whether the pin lies inside its own cell's OBS, and whether the net's original wiring itself
+overlaps that OBS (then the input layout does not keep to the OBS either: the OBS in the LEF is drawn over the pin
+access). A LEF OBS that blocks the pin is reported as **LEF/DEF**, a DEF routing blockage over the pin as
+**TESTCASE**. Design-wide it reports how much of each cell the OBS covers per layer, how many connected pins overlap
+their own cell's OBS, and where the original wiring overlaps OBS or blockages. LEF POLYGON shapes are split into
+rectangles (not their bounding box), so an L-shaped OBS next to a pin does not cover it.
+
+`--drop-obs` (default `auto`): when an OBS or a DEF blockage over a pin is what blocks a net, the router ignores exactly
+those shapes (`inst=<cell>:<layer>`, `blockage#K`) for that net and routes again; route.log and
+`s2_candidates/relaxation.txt` list what was ignored, the original cause, and where the new wiring overlaps or comes
+within spacing of the ignored shapes (those places are not counted in drc.rpt). `--drop-obs off` never ignores;
+specs for every net: a layer (`M1`), `own` (OBS of the net's own cells), `MACRO[:LAYER]`, `inst=NAME[:LAYER]`, `all`,
+`blockage[:LAYER]`, `blockage#K`.
+
 ## Quick start
 
 ```bash
