@@ -37,6 +37,12 @@ cells' pins / OBS as obstacles, via pads checked for spacing, off-grid pin acces
 policy's candidate tree as a guide (cost penalty outside its corridor). Only the target net is rewritten; a spacing
 self-check writes drc.rpt, so a reroute with a violation is not counted as valid. It is not a signoff DRC.
 
+Dense pin areas (e.g. transistor-level FinFET layouts): when the net cannot be ripped up completely (no legal path to
+a pin), the router keeps the net's original pin-access wiring (everything except its segments of 3 or more pitches on
+the signal layers, plus the vias touching what is kept), so only the long trunk between the pins is rerouted; the
+kept wiring is legal in the original layout. route.log says which way each net was routed. `ROUTER_MODE=full` or
+`ROUTER_MODE=partial` forces one way.
+
 ## Quick start
 
 ```bash

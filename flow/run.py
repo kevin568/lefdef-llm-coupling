@@ -254,7 +254,10 @@ def auto_normalize(case, d, base_def, st):
                 route_dirs={n: str(p) for n, p in dirs.items()} if stable else {})   # reused by s2_candidates
     (d / 'normalize.json').write_text(json.dumps(info, indent=1))
     st.info.update(def_repatched=info['patched'], normalize_stable=stable)
-    if info['patched'] or not stable:
+    if not dirs:   # nothing to compare: every check reroute failed (s2 prints the router's reasons)
+        print(f'  note: the {len(check)} check reroutes all failed, so whether OpenROAD re-patches this DEF is unknown; '
+              f'first logs: {d / "normalize_check_1"}/*/route.log')
+    elif info['patched'] or not stable:
         first = rounds[0]
         print(f'  note: OpenROAD re-patches this DEF (rerouting {len(check)} nets one at a time changed '
               f'{first["other_nets_changed"]} other nets); '
