@@ -175,14 +175,12 @@ def s0_check(case, out, st):
             raise C.StageError(f'input file differs from data/SOURCES.json: {p}\n  (line-ending conversion on checkout? see README "Debugging")')
     st.info['inputs_verified'] = True
     st.info['cell_types_used'] = C.check_lef_def(case)
-    if ARGS.policy == 'llm':
-        try:
-            import torch, transformers, peft, bitsandbytes  # noqa: F401
-        except Exception as e:
-            raise C.StageError(f'LLM policy needs torch/transformers/peft/bitsandbytes ({e}); pip install -r requirements.txt or use --policy heuristic')
-        if not torch.cuda.is_available():
-            raise C.StageError('LLM policy needs a CUDA GPU; use --policy heuristic to run without it')
-        st.info['gpu'] = torch.cuda.get_device_name()
+    if uses_llm():
+        from lib.scorer import available
+        ok, dev, why = available()
+        if not ok:
+            raise C.StageError(f'--policy {ARGS.policy} needs the LLM: {why}\n  (or run with --policy heuristic)')
+        st.info['llm_device'] = why
     st.info['case'] = {k: case[k] for k in ('def', 'layers', 'rules', 'split', 'domain', 'normalize', 'tolerate_baseline_drc') if k in case}
 
 
@@ -379,30 +377,67 @@ def s3_score(case, out, st):
     rnd = np.random.default_rng(121)
     rows = [dict(candidate_id=c['candidate_id'], net=c['net'], kind=c['kind'], heuristic=c['heuristic'], random=float(rnd.random()))
             for c in trees]
-    if ARGS.policy == 'llm':
+    if uses_llm():
         from lib.scorer import Scorer
         adapter = Path(ARGS.adapter) if ARGS.adapter else C.REPO / 'models/llm_v2/adapter'
+        print(f'  loading the LLM ({len(trees)} prompts to score) ...', flush=True)
         sc = Scorer(adapter); st.info['model'] = sc.identity
-        for r, s in zip(rows, sc.score([c['prompt'] for c in trees])):
+        print(f'  model: {sc.identity["base_model"]} + {Path(sc.identity["adapter"]).parent.name}, {sc.identity["device"]} '
+              f'{sc.identity["dtype"]}, threads {sc.identity["threads"]}, loaded in {sc.identity["load_s"]} s', flush=True)
+        for r, s in zip(rows, sc.score([c['prompt'] for c in trees], groups=[c['net'] for c in trees])):
             r['llm'] = s
+        st.info['llm_seconds'] = round(sc.seconds, 1)
+        # hybrid: per net, z-scored LLM score + z-scored heuristic (the LLM re-ranks among geometrically similar trees)
+        by = {}
+        for r in rows:
+            by.setdefault(r['net'], []).append(r)
+        for rs in by.values():
+            for r, a, b in zip(rs, zscore([r['llm'] for r in rs]), zscore([r['heuristic'] for r in rs])):
+                r['hybrid'] = a + b
     (st.dir / 'scores.json').write_text(json.dumps(dict(policy=ARGS.policy, rows=rows), indent=1))
     st.info['scored'] = len(rows)
+
+
+def zscore(xs):
+    m = sum(xs) / len(xs); sd = (sum((x - m) ** 2 for x in xs) / len(xs)) ** .5
+    return [(x - m) / sd if sd else 0. for x in xs]
+
+
+def uses_llm():
+    return ARGS.policy in ('llm', 'hybrid')
+
+
+def policy_keys(S):
+    """Rankers to compare: the chosen policy first, then the others that have scores."""
+    some = next(iter(S.values()), {})
+    return [ARGS.policy] + [k for k in ('llm', 'hybrid', 'heuristic', 'random') if k != ARGS.policy and k in some]
+
+
+def top1(trees, S, key):
+    best = {}
+    for c in trees:
+        s = S[c['candidate_id']][key]
+        if c['net'] not in best or s > S[best[c['net']]['candidate_id']][key]:
+            best[c['net']] = c
+    return best
 
 
 def s4_route(case, out, st):
     P = json.loads((out / 's2_candidates/candidates.json').read_text())
     S = {r['candidate_id']: r for r in json.loads((out / 's3_score/scores.json').read_text())['rows']}
-    key = 'llm' if ARGS.policy == 'llm' else ARGS.policy
     trees = [c for c in P['candidates'] if c['kind'] != 'default']
     if ARGS.route == 'all':
         pick = trees
-    else:   # the policy's best tree per net
-        best = {}
-        for c in trees:
-            s = S[c['candidate_id']][key]
-            if c['net'] not in best or s > S[best[c['net']]['candidate_id']][key]:
-                best[c['net']] = c
-        pick = [best[n] for n in P['nets'] if n in best]
+    else:   # the policy's best tree per net; with --compare also the other rankers' best trees (each measured alone)
+        keys = policy_keys(S) if ARGS.compare else [ARGS.policy]
+        seen = {}
+        for k in keys:
+            best = top1(trees, S, k)
+            for n in P['nets']:
+                if n in best:
+                    seen.setdefault(best[n]['candidate_id'], best[n])
+        pick = list(seen.values())
+        st.info['rankers'] = keys
     base_def = out / 's1_import/base.def'
     jobs = [(i, c, st.dir / 'runs' / f'{i:03d}_{safe(c["candidate_id"])}') for i, c in enumerate(pick)]
 
@@ -472,11 +507,18 @@ def s6_apply(case, out, st):
     cand = {c['candidate_id']: c for c in json.loads((out / 's2_candidates/candidates.json').read_text())['candidates']}
     key = ARGS.policy
     pick = {}
-    for r in M['rows']:
-        if r['kind'] == 'default' or not r.get('valid'):
-            continue
-        if r['net'] not in pick or S[r['candidate_id']][key] > S[pick[r['net']]['candidate_id']][key]:
-            pick[r['net']] = r
+    if ARGS.route == 'all':   # the policy's best valid tree per net
+        for r in M['rows']:
+            if r['kind'] == 'default' or not r.get('valid'):
+                continue
+            if r['net'] not in pick or S[r['candidate_id']][key] > S[pick[r['net']]['candidate_id']][key]:
+                pick[r['net']] = r
+    else:   # the policy's top tree per net (other rankers' picks, routed for --compare, are not used here)
+        meas = {r['candidate_id']: r for r in M['rows']}
+        for n, c in top1([c for c in cand.values() if c['kind'] != 'default'], S, key).items():
+            r = meas.get(c['candidate_id'])
+            if r and r.get('valid'):
+                pick[n] = r
     queue = sorted((r for r in pick.values() if r['U'] > 0), key=lambda r: -r['U'])
     known = known_violations(case, out)
     base_sp = spef.read(b / 'base.spef')
@@ -548,7 +590,7 @@ def s7_report(case, out, st):
     from statistics import mean
     M = json.loads((out / 's5_extract/measurements.json').read_text()); base = M['baseline']; rows = M['rows']
     S = {r['candidate_id']: r for r in json.loads((out / 's3_score/scores.json').read_text())['rows']}
-    pol = 'llm' if ARGS.policy == 'llm' else ARGS.policy
+    pol = ARGS.policy
     trees = [r for r in rows if r['kind'] != 'default']; dflt = {r['net']: r for r in rows if r['kind'] == 'default'}
     lines = [f'# Coupling report: {case["name"]}', '',
              f'Baseline: total coupling {base["cc_fF"]:.3f} {CU}, wire length {base["wl_um"]:.1f} um, vias {base["vias"]}, '
@@ -601,6 +643,16 @@ def s7_report(case, out, st):
                 net_cc_before_fF=sum(r['net_cc_before_fF'] for r in v), net_cc_after_fF=sum(r['net_cc_after_fF'] for r in v))
     lines += ['', f'Valid {len(v)}/{len(trees)}, improved {summ["improved"]}, '
                   f'rerouted nets coupling {summ["net_cc_before_fF"]:.2f} → {summ["net_cc_after_fF"]:.2f} {CU}.']
+    cmp_ = compare_rankers(out, S, rows)
+    if len(cmp_) > 1:
+        summ['rankers'] = cmp_
+        lines += ['', "## Ranker comparison (same candidates; each ranker's top tree per net, each rerouted and measured alone)", '',
+                  'A pick is kept when it is valid and improves U; otherwise the net keeps its route. '
+                  '`hybrid` = per net, z-scored LLM score + z-scored heuristic.', '',
+                  f'| ranker | nets | valid picks | kept (U>0) | coupling of the nets ({CU}) | change | mean U | same pick as heuristic |',
+                  '|---|---:|---:|---:|---|---:|---:|---:|']
+        lines += [f'| {k} | {x["nets"]} | {x["valid"]} | {x["kept"]} | {x["cc_before"]:.2f} → {x["cc_after"]:.2f} | '
+                  f'{x["change_pct"]:+.2f}% | {x["mean_U"]:+.4f} | {x["same_as_heuristic"]} |' for k, x in cmp_.items()]
     if ARGS.route == 'all' and len(v) >= 3:   # ranking quality against measured U
         from scipy.stats import spearmanr
         rk = {}
@@ -623,14 +675,36 @@ def s7_report(case, out, st):
     st.info.update(valid=len(v), improved=summ['improved'])
 
 
+def compare_rankers(out, S, rows):
+    """Per ranker: its top tree per net, looked up in the single-net measurements. Coupling sums run over the nets whose
+    pick is valid (an invalid pick leaves its net as it was); a valid pick that does not improve U is not kept."""
+    P = json.loads((out / 's2_candidates/candidates.json').read_text())
+    trees = [c for c in P['candidates'] if c['kind'] != 'default']
+    meas = {r['candidate_id']: r for r in rows}
+    some = next(iter(S.values()), {})
+    hp = top1(trees, S, 'heuristic') if 'heuristic' in some else {}
+    res = {}
+    for k in policy_keys(S):
+        best = top1(trees, S, k); got = [meas.get(c['candidate_id']) for c in best.values()]
+        if not got or any(m is None for m in got):   # not routed (e.g. --no-compare): not comparable
+            continue
+        val = [m for m in got if m.get('valid')]; kept = [m for m in val if m['U'] > 0]
+        before = sum(m['net_cc_before_fF'] for m in got if 'net_cc_before_fF' in m)
+        after = before - sum(m['net_cc_before_fF'] - m['net_cc_after_fF'] for m in kept)
+        res[k] = dict(nets=len(got), valid=len(val), kept=len(kept), cc_before=before, cc_after=after,
+                      change_pct=100. * (after - before) / before if before else 0.,
+                      mean_U=sum(m['U'] for m in kept) / len(got),
+                      same_as_heuristic=sum(hp.get(n, {}).get('candidate_id') == c['candidate_id'] for n, c in best.items()))
+    return res
+
+
 def default_policy():
-    try:
-        import torch, transformers, peft, bitsandbytes  # noqa: F401
-        if torch.cuda.is_available():
-            return 'llm'
-    except Exception:
-        pass
-    print('no CUDA GPU / LLM packages: using --policy heuristic (geometric ranking)')
+    from lib.scorer import available
+    ok, dev, why = available()
+    if ok:
+        print(f'LLM available ({why}): using --policy hybrid (LLM + heuristic; --policy llm for the LLM alone)')
+        return 'hybrid'
+    print(f'LLM not available: {why}\n  using --policy heuristic (geometric ranking)')
     return 'heuristic'
 
 
@@ -652,8 +726,11 @@ def main():
                      help='count pre-existing DRC violations (reported by every router-default reroute) as new')
     own.add_argument('--def', dest='def_file', help=argparse.SUPPRESS)
     own.add_argument('--lef', help=argparse.SUPPRESS)
-    ap.add_argument('--policy', default=None, choices=['llm', 'heuristic', 'random'],
-                    help='default: llm when a CUDA GPU and the LLM packages are available, else heuristic')
+    ap.add_argument('--policy', default=None, choices=['llm', 'hybrid', 'heuristic', 'random'],
+                    help='default: hybrid (LLM + heuristic, z-scored per net) when the LLM can run (CUDA GPU, or CPU after '
+                         'tools/install_llm_cpu.sh), else heuristic')
+    ap.add_argument('--compare', action=argparse.BooleanOptionalAction, default=None,
+                    help="also reroute and measure the other rankers' top tree per net (default: on with the LLM)")
     ap.add_argument('--adapter', help='LoRA adapter dir (default models/llm_v2/adapter)')
     ap.add_argument('--router', default='auto', choices=['auto', 'openroad', 'builtin'],
                     help='reroutes: OpenROAD detailed router, or the built-in track router (flow/lib/router.py); '
@@ -681,6 +758,8 @@ def main():
             case['router'] = 'builtin' if ARGS.router == 'builtin' else 'openroad'
         if ARGS.policy is None:
             ARGS.policy = default_policy()
+        if ARGS.compare is None:
+            ARGS.compare = uses_llm()
         if ARGS.nets:
             case['net_regex'] = ARGS.nets
     except C.StageError as e:
@@ -699,6 +778,15 @@ def main():
               f'  Start again in that folder (deletes the earlier results):  rm -rf {out}\n'
               f'  or keep them and write elsewhere: add  --out {out}_2  to the command'); sys.exit(2)
     fpf.write_text(json.dumps(fp, indent=1))
+    # ranking settings: finished s3+ stages are reused only for the same policy / adapter / compare / route
+    sel = dict(policy=ARGS.policy, adapter=ARGS.adapter, compare=ARGS.compare, route=ARGS.route)
+    self_f = out / 'selection.json'; old_sel = json.loads(self_f.read_text()) if self_f.exists() else None
+    if not ARGS.start and not ARGS.only and C.stage_ok(out, 's3_score') and old_sel != sel:
+        sc_rows = json.loads((out / 's3_score/scores.json').read_text())['rows']
+        need_llm = uses_llm() and (not sc_rows or 'llm' not in sc_rows[0] or (old_sel or {}).get('adapter') != ARGS.adapter)
+        ARGS.start = 's3_score' if need_llm else 's4_route'
+        print(f'ranking settings changed ({old_sel} -> {sel}): re-running from {ARGS.start}')
+    self_f.write_text(json.dumps(sel, indent=1))
     todo = [ARGS.only] if ARGS.only else STAGES[STAGES.index(ARGS.start):] if ARGS.start else STAGES
     for name in STAGES:
         if name not in todo:
@@ -729,6 +817,13 @@ def main():
         print(f'  wire length     {b["wl_um"]:10.1f} -> {f["wl_um"]:10.1f} um   {A["wl_change_pct"]:+.2f}%')
         print(f'  vias            {b["vias"]:10d} -> {f["vias"]:10d}      {A["via_change"]:+d}')
         print(f'  final layout    {A["final_def"]}')
+    R = json.loads((out / 'report.json').read_text()) if (out / 'report.json').exists() else {}
+    if R.get('rankers'):
+        print('\n=== rankers on the same candidates (top tree per net, each rerouted alone; kept = valid and U>0) ===')
+        print(f'  {"ranker":10s} {"nets":>4s} {"valid":>5s} {"kept":>4s}   coupling of the nets ({CU})        change   mean U  same as heuristic')
+        for k, x in R['rankers'].items():
+            print(f'  {k:10s} {x["nets"]:4d} {x["valid"]:5d} {x["kept"]:4d}   {x["cc_before"]:10.3f} -> {x["cc_after"]:10.3f}   '
+                  f'{x["change_pct"]:+7.2f}%  {x["mean_U"]:+.4f}  {x["same_as_heuristic"]}/{x["nets"]}')
     print(f'\nfull report: {out / "report.md"}')
 
 

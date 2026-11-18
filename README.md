@@ -44,8 +44,8 @@ git clone https://github.com/kevin568/lefdef-llm-coupling.git    # the full URL 
 cd lefdef-llm-coupling
 pip install -r requirements.txt          # Python 3.10+; torch/peft/bitsandbytes only needed for the LLM
 export OPENROAD=/path/to/openroad         # or have `openroad` on PATH
-python flow/run.py tempsense                          # LLM policy (CUDA GPU), best tree per net
-python flow/run.py tempsense --policy heuristic       # no GPU: geometric heuristic ranks the trees
+python flow/run.py tempsense                          # LLM + heuristic (CUDA GPU, or CPU: see "LLM on a CPU"), best tree per net
+python flow/run.py tempsense --policy heuristic       # no LLM: geometric heuristic ranks the trees
 python flow/run.py tempsense --route all              # route every candidate: ranking quality vs measured truth
 cat out/tempsense/report.md
 ```
@@ -73,7 +73,12 @@ What is decided for you (each can be overridden):
   -61.6% on 14 rerouted nets, OpenRCX -49.3% (12 of 14 nets lower, design -12.7%); tempsense, proxy -30.3% on 9 nets,
   OpenRCX -41.1% (3 of 9 nets lower, design -8.9%). For fF on your technology, extract the input DEF and
   `s6_apply/final.def` with your extractor (StarRC, Calibre, Quantus) or pass `--rules FILE`.
-- **Policy** (`--policy`): the LLM when a CUDA GPU and its packages are present, otherwise the geometric heuristic.
+- **Policy** (`--policy`): `hybrid` when the LLM can run (CUDA GPU, or CPU after `tools/install_llm_cpu.sh`):
+  per net, the z-scored LLM score plus the z-scored heuristic. Otherwise the geometric heuristic. `llm`: the LLM alone.
+- **Ranker comparison** (`--compare`, on by default with the LLM): the top tree per net of every ranker (LLM, hybrid,
+  heuristic, random) is rerouted and measured alone, and the report and terminal end with a table: per ranker, valid
+  picks, picks that improve U, and the coupling of the nets before → after. `s6_apply` still combines only the
+  chosen policy's picks.
 - **Published DEFs that OpenROAD re-patches** (`--normalize auto`): on some older layouts the first OpenROAD detailed
   route also fixes pre-existing defects, so every reroute would change other nets and be marked invalid. Stage
   `s1_import` reroutes, one at a time and with the router default (as the later stages do), the likely target nets
@@ -147,8 +152,20 @@ With `--route all` all 192 trees are valid and 112 of them improve U.
   it loads is inside that folder (needs glibc 2.17 or newer); checked end to end on `tempsense` (40/40 valid reroutes,
   same baseline as OpenROAD 26Q2). With that older OpenROAD, the geometry export reads wires from the DEF
   (`flow/lib/defwires.py`, identical shapes to OpenDB's on 6 checked layouts).
-- LLM policy: a CUDA GPU with at least 8 GB. The base model `unsloth/Qwen2.5-3B-Instruct-bnb-4bit` (about 2 GB)
+- LLM policy on a GPU: CUDA with at least 8 GB. The base model `unsloth/Qwen2.5-3B-Instruct-bnb-4bit` (about 2 GB)
   is downloaded from Hugging Face on first use. Read `NOTICE.md` for its license.
+- **LLM on a CPU** (no GPU): `bash tools/install_llm_cpu.sh` installs PyTorch (CPU build), transformers and peft into
+  the flow's Python (`local-tools/env-python`, else the `python3` on PATH) and the 4-bit base model the adapter was
+  trained on (`unsloth/Qwen2.5-3B-Instruct-bnb-4bit`, pinned revision, 2.1 GB, checksums in `tools/lock/`) into
+  `local-tools/models/`; about 3.5 GB, nothing outside this folder, re-running resumes, ends with a self-test
+  (`python3 flow/lib/scorer.py --selftest`). `flow/lib/scorer.py` unpacks the 4-bit weights into the exact values
+  bitsandbytes computes with (checked bit for bit against bitsandbytes), merges the adapter, and lets the prompts of
+  one net share their common beginning (about half the tokens). Checked on `tempsense` (192 prompts) against the
+  GPU: Spearman 0.996, largest score difference 0.06 (the GPU computes in bfloat16); 1.8 s per prompt on a 20-thread
+  desktop CPU, so a few hundred prompts take 5 to 15 minutes (stage `s3_score` prints progress and time left).
+  Memory: about 13 GB of RAM (`LLM_DTYPE=bfloat16`: half, slower on most CPUs). `LLM_THREADS=N` limits the threads
+  on a shared machine. Mirror: `HF_ENDPOINT=https://...`; no internet: set `WHEELS=folder` with the wheels and copy
+  the model files into `local-tools/models/Qwen2.5-3B-Instruct-bnb-4bit/`.
 
 ## Layouts (`config/cases.json`)
 
@@ -176,7 +193,7 @@ its last lines. Fix the cause and resume with `--from <stage>`; finished stages 
 | `s0_check` | OpenROAD commands, GPU / Python packages, input hashes vs `data/SOURCES.json` | `status.json` | missing tool, wrong file (e.g. CRLF line endings after a Windows checkout) |
 | `s1_import` | read LEF/DEF, rewrite baseline DEF, extract baseline SPEF, export geometry | `base.def`, `base.spef`, `geo.json`, `baseline.json` | `import.log`, `extract.log`, `export.log` |
 | `s2_candidates` | pick the `pool_nets` nets with the largest extracted coupling, run OpenROAD's own reroute of each (pin access + "router default" candidate), build candidate trees, route guides and prompt text | `candidates.json`, `pin_access/*/route.log` | a `pin_access/*/route.log` |
-| `s3_score` | LLM score (`logit Yes - logit No`) for every tree, plus heuristic and random scores | `scores.json` | GPU / model download |
+| `s3_score` | LLM score (`logit Yes - logit No`) for every tree (GPU or CPU; progress and time left are printed), plus heuristic, hybrid and random scores | `scores.json` | model load: `python3 flow/lib/scorer.py --selftest` |
 | `s4_route` | OpenROAD ECO: rip up one net, read the candidate's guides, `detailed_route` | `runs/<id>/out.def`, `drc.rpt`, `route.log` | `runs/<id>/route.log`; failures are listed in `routed.json` |
 | `s5_extract` | OpenRCX on every routed DEF; legality checks; coupling metrics | `runs/<id>/out.spef`, `metrics.json`, `measurements.json` | `runs/<id>/extract.log` |
 | `s6_apply` | combine: per net the policy's top-scored routed tree with single-net U > 0, rerouted one after another on the evolving DEF (largest U first); a step is kept only if it is legal against the current layout and improves U again | `final.def`, `final.spef`, `apply.json`, `steps/<n>_<net>/` | `steps/*/route.log`; skipped steps are listed with reasons |
