@@ -43,6 +43,14 @@ the signal layers, plus the vias touching what is kept), so only the long trunk 
 kept wiring is legal in the original layout. route.log says which way each net was routed. `ROUTER_MODE=full` or
 `ROUTER_MODE=partial` forces one way.
 
+When a net still cannot be connected, the router says why (in route.log, the terminal and
+`s2_candidates/diagnosis.txt`), with evidence, as one of: **TESTCASE** (the input layout itself: the original wiring
+does not reach the pin, the cell sits elsewhere than its wiring, or the pin overlaps another net), **LEF/DEF** (the LEF
+does not match the DEF: a cell or pin missing from the LEF, a cell that fits its wiring only turned differently, or most
+pins of the design unreached; the flow's own cell placement is named as a possible cause too), or **ROUTER** (the
+original wiring reaches the pin, but this router finds no legal access; the closest other shapes are listed). Every
+diagnosis also states how many pin connections of the whole design the original wiring reaches.
+
 ## Quick start
 
 ```bash

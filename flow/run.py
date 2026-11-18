@@ -103,6 +103,38 @@ def route_errors(logs):
                                                          sorted(seen.items(), key=lambda kv: -kv[1])[:15])
 
 
+def route_diagnosis(logs, out_file, show=4):
+    """the built-in router's per-net diagnosis (DIAG lines): verdict counts, the first nets in full, all in out_file"""
+    import textwrap
+    rows = []
+    for lg in logs:
+        try:
+            L = Path(lg).read_text(errors='replace').splitlines()
+        except OSError:
+            continue
+        head = [x[5:] for x in L if x.startswith('DIAG ') and not x.startswith('DIAG   ')]
+        if head:
+            rows.append((head[0], [x[7:] for x in L if x.startswith('DIAG   ')], str(lg)))
+    if not rows:
+        return ''
+    Path(out_file).write_text(''.join(f'{h}\n' + ''.join(f'    {e}\n' for e in ev) + f'    log: {lg}\n\n' for h, ev, lg in rows))
+    cnt = {}
+    for h, _, _ in rows:
+        v = h.split(': ')[1] if ': ' in h else '?'
+        cnt[v] = cnt.get(v, 0) + 1
+    w = lambda t, ind: textwrap.fill(t, 150, initial_indent=ind, subsequent_indent=ind + '  ')
+    out = ['  why these nets cannot be connected (TESTCASE = the input layout itself, LEF/DEF = the LEF does not match the DEF '
+           "or the flow places cells wrongly, ROUTER = this flow's router): "
+           + ', '.join(f'{n} {k}' for k, n in sorted(cnt.items(), key=lambda kv: -kv[1]))]
+    if rows[0][1]:
+        out.append(w(rows[0][1][0], '    '))   # design-wide line (same for every net)
+    for h, ev, _ in rows[:show]:
+        out.append(w(h, '    '))
+        out += [w(e, '        ') for e in ev[1:3]]
+    out.append(f'    all {len(rows)} net(s) with evidence: {out_file}')
+    return '\n'.join(out)
+
+
 def try_route(case, state_def, net, rundir):
     """Router-default reroute of one net; False (instead of stopping the flow) when OpenROAD fails on it."""
     try:
@@ -328,10 +360,13 @@ def s2_candidates(case, out, st):
     if bad:   # OpenROAD could not reroute these nets at all: leave them out of the pool
         print(f'  note: {len(bad)} net(s) left out: the router-default reroute failed (e.g. {bad[0]}, log: '
               f'{pdirs[bad[0]] / "route.log"})')
+        diag = route_diagnosis([pdirs[n] / 'route.log' for n in bad], d / 'diagnosis.txt')
         nets = [n for n in nets if n not in bad]
         if not nets:
             raise C.StageError(f'every router-default reroute failed; first log: {pdirs[bad[0]] / "route.log"}\n'
-                               + route_errors([pdirs[n] / 'route.log' for n in bad]))
+                               + (diag or route_errors([pdirs[n] / 'route.log' for n in bad])))
+        if diag:
+            print(diag)
     st.info['route_failed_nets'] = bad
     # pre-existing DRC violations: reported by every router-default reroute (>= 2 nets) or by the last normalize run;
     # they are tolerated for your own layouts unless --strict (tolerate_baseline_drc in cases.json)

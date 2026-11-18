@@ -33,6 +33,12 @@ TOK = re.compile(r'\(|\)|;|[^\s();]+')
 ORIENTS = ('N', 'S', 'E', 'W', 'FN', 'FS', 'FE', 'FW')
 
 
+class NoPath(RuntimeError):
+    """a net that cannot be connected; pin = (inst, pin) where it failed (None: the net as a whole)"""
+    def __init__(self, msg, pin=None):
+        RuntimeError.__init__(self, msg); self.pin = pin
+
+
 def orient_pt(x, y, w, h, o):
     return {'N': (x, y), 'S': (w - x, h - y), 'W': (h - y, x), 'E': (y, w - x),
             'FN': (w - x, y), 'FS': (x, h - y), 'FW': (y, x), 'FE': (h - y, w - x)}.get(o, (x, y))
@@ -367,6 +373,26 @@ class Design(object):
                                 int(round(loc[0] + max(p1[0], p2[0]) * u)), int(round(loc[1] + max(p1[1], p2[1]) * u)))))
         return out
 
+    def obstacles_labeled(self, skip_net):
+        """[(layer, rect, owner)]: as obstacles(), with what each shape belongs to"""
+        out = [(l, r, 'special net (power/ground)') for l, r in self.special]
+        own = set(self.nets.get(skip_net, {}).get('conns', []))
+        for n, v in self.nets.items():
+            if n != skip_net:
+                out += [(l, r, f'net {n}') for l, r in v['shapes']]
+        for inst, (mac, loc) in self.comps.items():
+            M = self.tech.macros.get(mac)
+            if not M or not loc:
+                continue
+            out += [(l, r, f'{inst} OBS') for l, r in self._place(M, M['obs'], loc)]
+            for pin, shapes in M['pins'].items():
+                if (inst, pin) not in own:
+                    out += [(l, r, f'pin {inst}/{pin}') for l, r in self._place(M, shapes, loc)]
+        for pin, shapes in self.iopins.items():
+            if ('PIN', pin) not in own:
+                out += [(l, r, f'I/O pin {pin}') for l, r in shapes]
+        return out
+
     def obstacles(self, skip_net):
         """[(layer, rect)] every shape the reroute of skip_net must keep spacing to"""
         out = list(self.special)
@@ -480,7 +506,7 @@ class Router(object):
         if terms:
             pins = [(lab, [(l, r) for l, r in sh if l in T.routing]) for lab, sh in terms]
         if len(pins) < 2:
-            raise RuntimeError(f'{net}: fewer than 2 pins with shapes on routing layers')
+            raise NoPath(f'{net}: fewer than 2 pins with shapes on routing layers', None)
         pts = [r for _, sh in pins for _, r in sh] + ([g[:4] for g in guide] if guide else [])
         win = (min(r[0] for r in pts) - margin * self.P, min(r[1] for r in pts) - margin * self.P,
                max(r[2] for r in pts) + margin * self.P, max(r[3] for r in pts) + margin * self.P)
@@ -600,7 +626,7 @@ class Router(object):
                 if og:   # off-grid access on the pin with exact spacing: preferred over grid nodes
                     acc = set(og)
             if not acc:
-                raise RuntimeError(f'{net}: no access point for {inst}/{pin}')
+                raise NoPath(f'{net}: no access point for {inst}/{pin}', (inst, pin))
             # the net's own shapes are no obstacles, so a blocked access node is blocked by another net: use free ones
             # (on the pin layer below, also where the stack via's pad keeps spacing); only if there is none, keep the
             # best ones and let the self-check report it
@@ -641,8 +667,8 @@ class Router(object):
                                if 0 <= k + dk < L and 0 <= i + di < nx and 0 <= j + dj < ny and not blocked[k + dk, i + di, j + dj])
                     lay = sorted({self.L[k] for k, _, _ in nodes})
                     return f'{len(nodes)} access node(s) on {"/".join(lay)}, {free} free neighbour(s)'
-                raise RuntimeError(f'{net}: no path to pin {pins[ti][0][0]}/{pins[ti][0][1]} ({why(list(goal))}; '
-                                   f'from {pins[0][0][0]}/{pins[0][0][1]}: {why(list(first))}; grid {nx}x{ny}x{L}, pitch {self.P})')
+                raise NoPath(f'{net}: no path to pin {pins[ti][0][0]}/{pins[ti][0][1]} ({why(list(goal))}; '
+                             f'from {pins[0][0][0]}/{pins[0][0][1]}: {why(list(first))}; grid {nx}x{ny}x{L}, pitch {self.P})', pins[ti][0])
             if not path_nodes:
                 tree = set()
                 if first.get(p[0]):
@@ -800,6 +826,111 @@ def self_check(shapes, obstacles, tech, dbu, net):
     return out
 
 
+def _rdist(a, b):
+    """gap between two rects (0 when they touch or overlap)"""
+    return max(a[0] - b[2], b[0] - a[2], a[1] - b[3], b[1] - a[3], 0)
+
+
+_AUDIT = {}
+
+
+def audit(D):
+    """original layout: how many pin connections are reached by their own net's wiring (shapes touching on a layer)"""
+    if 'r' in _AUDIT:
+        return _AUDIT['r']
+    tot = hit = 0; miss = []
+    for n, v in D.nets.items():
+        if not v['shapes'] or v['use'] in ('POWER', 'GROUND'):
+            continue
+        for inst, pin in v['conns']:
+            sh = D.pin_shapes(inst, pin)
+            if not sh:
+                continue
+            tot += 1
+            if any(_touch(a, b) for a in sh for b in v['shapes']):
+                hit += 1
+            elif len(miss) < 4:
+                miss.append(f'{n}:{inst}/{pin}')
+    _AUDIT['r'] = (hit, tot, miss)
+    return _AUDIT['r']
+
+
+def diagnose(D, R, net, pin):
+    """why a pin of the net cannot be connected: (verdict, reason, evidence lines). verdict: TESTCASE (the input layout),
+    LEF/DEF (the LEF does not match the DEF, or the flow places cells wrongly), ROUTER (this router)"""
+    T, u = D.tech, D.dbu
+    um = lambda v: f'{v / u:.3f}'
+    hit, tot, miss = audit(D)
+    ev = [f'original layout: {hit} of {tot} pin connections in the design are reached by their own net\'s wiring'
+          + (f' (not reached e.g. {", ".join(miss)})' if miss else '')]
+    if pin is None:   # the net as a whole: list the pins without routing-layer shapes
+        bad = [f'{i}/{p}' for i, p in D.nets[net]['conns'] if not [1 for l, _ in D.pin_shapes(i, p) if l in T.routing]]
+        return 'LEF/DEF', f'{len(bad)} pin(s) of {net} have no shape on a routing layer ({", ".join(bad[:6])})', ev
+    inst, pn = pin
+    sh = D.pin_shapes(inst, pn)
+    if not sh:
+        if inst == 'PIN':
+            return 'TESTCASE', f'I/O pin {pn} has no shape in the DEF PINS section', ev
+        mac, loc = D.comps.get(inst, (None, None))
+        M = T.macros.get(mac)
+        if mac is None:
+            return 'TESTCASE', f'instance {inst} is not in the DEF COMPONENTS', ev
+        if not M:
+            return 'LEF/DEF', f'cell {mac} of {inst} is not in the LEF files', ev
+        return 'LEF/DEF', f'cell {mac} in the LEF has no shape for pin {pn} (LEF pins: {", ".join(sorted(M["pins"])[:8])})', ev
+    b = (min(r[0] for _, r in sh), min(r[1] for _, r in sh), max(r[2] for _, r in sh), max(r[3] for _, r in sh))
+    ev.append(f'pin {inst}/{pn}: {len(sh)} shape(s) on {"/".join(sorted({l for l, _ in sh}))}, '
+              f'bbox ({um(b[0])}, {um(b[1])}) - ({um(b[2])}, {um(b[3])}) um')
+    own = D.nets[net]['shapes']
+    touched = any(_touch(a, c) for a in sh for c in own)
+    obs = D.obstacles_labeled(net)
+    shorts = sorted({o for a in sh for l, r, o in obs if l == a[0] and _rdist(a[1], r) == 0 and r[0] < a[1][2] and a[1][0] < r[2]
+                     and r[1] < a[1][3] and a[1][1] < r[3] and o != f'{inst} OBS'})
+    near = []
+    for lay in [l for l in dict.fromkeys([a[0] for a in sh] + list(R.L[:2])) if l in T.routing]:
+        Rl = T.routing[lay]; reach = int(round((Rl['spacing'] + Rl['width'] + Rl['pitch']) * u))
+        ds = {}
+        for l, r, o in obs:
+            if l == lay:
+                d = min(_rdist(a[1], r) for a in sh)
+                if d <= reach and (o not in ds or d < ds[o]):
+                    ds[o] = d
+        near += [(d, f'{o} on {lay} {um(d)} um') for o, d in ds.items()]   # plan-view gap to the pin outline
+    near = [t for _, t in sorted(near)[:6]]
+    if near:
+        ev.append('closest other shapes (plan-view gap to the pin; 0 = over or touching it): ' + '; '.join(near))
+    if not touched:
+        same = [(_rdist(a[1], c[1]), c[0]) for a in sh for c in own if a[0] == c[0]]
+        dtxt = f'nearest wire of {net} on the same layer {um(min(same)[0])} um away on {min(same)[1]}' if same else \
+            f'{net} has no wiring on the pin\'s layer(s)'
+        alt, cell_miss, cell_tot = [], 0, 0
+        mac, loc = D.comps.get(inst, (None, None)) if inst != 'PIN' else (None, None)
+        M = T.macros.get(mac)
+        if M and loc:   # every connection of this cell: how many does the wiring reach as placed, and turned otherwise?
+            conns = [(n, p) for n, v in D.nets.items() for i, p in v['conns'] if i == inst and v['shapes']]
+            reached = lambda o: sum(any(_touch(a, c) for a in D._place(M, M['pins'].get(p) or M['pins'].get(p.replace('\\', '')) or [],
+                                                                        (loc[0], loc[1], o)) for c in D.nets[n]['shapes']) for n, p in conns)
+            cell_tot = len(conns); now = reached(loc[2]); cell_miss = cell_tot - now
+            alt = [o for o in ORIENTS if o != loc[2] and cell_tot and reached(o) == cell_tot]
+            ev.append(f'cell {inst} ({mac}, {loc[2]}): the original wiring reaches {now} of its {cell_tot} connected pins')
+        if tot and hit < .5 * tot:
+            return 'LEF/DEF', (f'the original wiring does not reach this pin ({dtxt}), and the same holds for most pins of the design '
+                               f'({tot - hit} of {tot}): the LEF cell geometry does not match the DEF, or the flow places the cells '
+                               f'wrongly (ours)'), ev
+        if alt:
+            return 'LEF/DEF', (f'the original wiring reaches this pin only if {inst} is turned {"/".join(alt)} instead of {loc[2]} '
+                               f'as the DEF says: the DEF orientation and the LEF disagree, or the flow\'s orientation handling is wrong (ours)'), ev
+        if cell_tot > 1 and cell_miss == cell_tot:
+            return 'TESTCASE', (f'none of the {cell_tot} connected pins of {inst} is reached by its wiring ({dtxt}): the cell is placed '
+                                f'elsewhere in the DEF than where the wiring was drawn for it (or its LEF cell differs)'), ev
+        return 'TESTCASE', (f'the original layout is open here: the original wiring of {net} does not reach this pin ({dtxt}); '
+                            f'the pin is not connected in the input DEF either'), ev
+    if shorts:
+        return 'TESTCASE', f'the pin overlaps {", ".join(shorts[:4])} in the original layout (a short in the input)', ev
+    return 'ROUTER', (f'the original wiring reaches this pin, but this router finds no legal way to it: every access point '
+                      f'it tries is within spacing of other shapes (closest listed below)'), ev
+
+
 def _touch(a, b):
     return a[0] == b[0] and a[1][0] <= b[1][2] and b[1][0] <= a[1][2] and a[1][1] <= b[1][3] and b[1][1] <= a[1][3]
 
@@ -873,24 +1004,29 @@ def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None
         mode = __import__('os').environ.get('ROUTER_MODE', 'auto')   # auto: full rip-up, else keep the pin access
         how = 'full rip-up'
         try:
-            if mode == 'partial':
-                raise RuntimeError('ROUTER_MODE=partial')
-            pieces, shapes = R.route_net(name, g)
-        except RuntimeError as e1:
-            if mode == 'full':
-                raise
-            errs = []
-            for mp in (3, 8, 20):   # keep the short pieces first; if that fails, keep longer ones (less is rerouted)
-                try:
-                    terms, kept, how = split_terminals(D, R, name, mp)
-                    pieces, shapes = R.route_net(name, g, terms=terms)
-                    break
-                except RuntimeError as e2:
-                    errs.append(f'keeping pieces < {mp} pitches: {e2}')
-            else:
-                raise RuntimeError(f'{e1} | ' + ' | '.join(errs))
-            logl.append(f'FLOW {name}: full rip-up not possible ({e1}); {how}')
-            pieces = kept + pieces
+            try:
+                if mode == 'partial':
+                    raise RuntimeError('ROUTER_MODE=partial')
+                pieces, shapes = R.route_net(name, g)
+            except RuntimeError as e1:
+                if mode == 'full':
+                    raise
+                errs = []; lastpin = None
+                for mp in (3, 8, 20):   # keep the short pieces first; if that fails, keep longer ones (less is rerouted)
+                    try:
+                        terms, kept, how = split_terminals(D, R, name, mp)
+                        pieces, shapes = R.route_net(name, g, terms=terms)
+                        break
+                    except RuntimeError as e2:
+                        errs.append(f'keeping pieces < {mp} pitches: {e2}'); lastpin = getattr(e2, 'pin', None) or lastpin
+                else:
+                    raise NoPath(f'{e1} | ' + ' | '.join(errs), getattr(e1, 'pin', None) or lastpin)
+                logl.append(f'FLOW {name}: full rip-up not possible ({e1}); {how}')
+                pieces = kept + pieces
+        except NoPath as e:
+            verdict, why, ev = diagnose(D, R, name, e.pin)
+            e.diag = [f'DIAG {name} pin {"/".join(e.pin) if e.pin else "-"}: {verdict}: {why}'] + [f'DIAG   {x}' for x in ev]
+            raise
         viol += self_check(shapes, D.obstacles(name), T, D.dbu, name)
         s, e = D.nets[name]['span']
         st = text[s:e]
@@ -926,8 +1062,10 @@ def main():
         run(a.lefs.split(','), a.def_in, a.out, a.nets.split(), a.layers, a.guide, a.log, a.drc, a.guide_out)
     except Exception as e:   # noqa: BLE001
         if a.log:
-            Path(a.log).write_text(f'Error: builtin router: {e}\n')
+            Path(a.log).write_text(f'Error: builtin router: {e}\n' + ''.join(x + '\n' for x in getattr(e, 'diag', [])))
         print(f'Error: builtin router: {e}', file=sys.stderr)
+        for x in getattr(e, 'diag', []):
+            print(x, file=sys.stderr)
         sys.exit(1)
 
 
