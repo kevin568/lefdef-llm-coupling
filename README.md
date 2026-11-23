@@ -114,6 +114,9 @@ What is decided for you (each can be overridden):
   -61.6% on 14 rerouted nets, OpenRCX -49.3% (12 of 14 nets lower, design -12.7%); tempsense, proxy -30.3% on 9 nets,
   OpenRCX -41.1% (3 of 9 nets lower, design -8.9%). For fF on your technology, extract the input DEF and
   `s6_apply/final.def` with your extractor (StarRC, Calibre, Quantus) or pass `--rules FILE`.
+- **Reuse**: finished stages are reused, except those made by older flow code: after a `git pull` that changes the
+  router, candidates, scorer or extraction code, the run starts again from the first stage that code affects
+  (`out/<case>/code.json`).
 - **Policy** (`--policy`): `hybrid` when the LLM can run (CUDA GPU, or CPU after `tools/install_llm_cpu.sh`):
   per net, the z-scored LLM score plus the z-scored heuristic. Otherwise the geometric heuristic. `llm`: the LLM alone.
 - **Ranker comparison** (`--compare`, on by default with the LLM): the top tree per net of every ranker (LLM, hybrid,
@@ -195,8 +198,10 @@ With `--route all` all 192 trees are valid and 112 of them improve U.
   (`flow/lib/defwires.py`, identical shapes to OpenDB's on 6 checked layouts).
 - LLM policy on a GPU: CUDA with at least 8 GB. The base model `unsloth/Qwen2.5-3B-Instruct-bnb-4bit` (about 2 GB)
   is downloaded from Hugging Face on first use. Read `NOTICE.md` for its license.
-- **LLM on a CPU** (no GPU): `bash tools/install_llm_cpu.sh` installs PyTorch (CPU build), transformers and peft into
-  the flow's Python (`local-tools/env-python`, else the `python3` on PATH) and the 4-bit base model the adapter was
+- **LLM on a CPU** (no GPU): `flow/run.py` does this by itself when the LLM is missing and the machine has at least
+  12 GB of RAM (`--no-llm-install` to skip; if the install fails, e.g. no internet, the flow goes on with the heuristic).
+  `bash tools/install_llm_cpu.sh` installs PyTorch (CPU build), transformers and peft into
+  the flow's Python (the one running `flow/run.py`; by hand: `local-tools/env-python`, else the `python3` on PATH) and the 4-bit base model the adapter was
   trained on (`unsloth/Qwen2.5-3B-Instruct-bnb-4bit`, pinned revision, 2.1 GB, checksums in `tools/lock/`) into
   `local-tools/models/`; about 3.5 GB, nothing outside this folder, re-running resumes, ends with a self-test
   (`python3 flow/lib/scorer.py --selftest`). `flow/lib/scorer.py` unpacks the 4-bit weights into the exact values

@@ -19,6 +19,7 @@ mkdir -p "$DEST"
 PREFIX=$(cd "$DEST" && pwd)
 PY="$PREFIX/env-python/bin/python3"
 [ -x "$PY" ] || PY=$(command -v python3)
+[ -z "${FLOW_PY:-}" ] || PY="$FLOW_PY"   # flow/run.py installs into the Python it runs with
 MODEL="$PREFIX/models/Qwen2.5-3B-Instruct-bnb-4bit"
 REV=2672b588848527e456d320c11926c794539f47d5
 HF="${HF_ENDPOINT:-https://huggingface.co}"
@@ -44,7 +45,8 @@ if "$PY" -c "import torch, transformers, peft, safetensors" > /dev/null 2>&1; th
 elif [ -n "${WHEELS:-}" ]; then
   "$PY" -m pip install --no-index --find-links "$WHEELS" torch transformers peft safetensors accelerate
 else
-  "$PY" -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.7.1"
+  # torch from the CPU index (+cpu exists only there), its dependencies from PyPI
+  "$PY" -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch==2.7.1+cpu"
   "$PY" -m pip install "transformers==4.57.3" "peft==0.18.1" "safetensors>=0.4" "accelerate>=0.34"
 fi
 "$PY" -c "import torch, transformers, peft; print('  torch', torch.__version__, 'transformers', transformers.__version__, 'peft', peft.__version__)"

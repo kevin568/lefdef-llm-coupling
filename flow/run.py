@@ -912,9 +912,62 @@ def compare_rankers(out, S, rows):
     return res
 
 
+CODE_STAGES = {   # flow code -> the first stage whose results depend on it
+    's1_import': ['lib/router.py', 'lib/common.py', 'lib/preflight.py', 'lib/defcells.py', 'lib/defwires.py', 'lib/lefpins.py',
+                  'lib/reduce.py', 'openroad/route.tcl', 'openroad/extract.tcl', 'openroad/export_geo.py'],
+    's2_candidates': ['lib/candidates.py', 'lib/guides.py', 'lib/features.py'],
+    's3_score': ['lib/scorer.py'],
+    's5_extract': ['lib/spef.py', 'lib/proxy.py', 'lib/proxyspef.py'],
+}
+
+
+def code_hashes():
+    import hashlib
+    out = {}
+    for s, fs in CODE_STAGES.items():
+        h = hashlib.sha256()
+        for f in fs:
+            p = C.FLOW / f
+            h.update(f.encode() + b'\0' + (p.read_bytes().replace(b'\r\n', b'\n') if p.exists() else b''))
+        out[s] = h.hexdigest()[:16]
+    return out
+
+
+def install_llm(why):
+    """the LLM is missing: install the CPU build into local-tools/ (tools/install_llm_cpu.sh) into this Python, once
+    -> True when it can be used now"""
+    if os.environ.get('FLOW_LLM_TRIED') or not ARGS.llm_install:
+        return False
+    os.environ['FLOW_LLM_TRIED'] = '1'
+    try:
+        tot = next(int(l.split()[1]) / 1048576 for l in open('/proc/meminfo') if l.startswith('MemTotal:'))
+    except (OSError, StopIteration, ValueError):
+        tot = 0.
+    if tot and tot < 12:
+        print(f'LLM not available ({why}); not installing it: this machine has {tot:.0f} GB of RAM, scoring needs about 13 GB')
+        return False
+    print(f'LLM not available ({why}).\n  Installing the CPU build now: tools/install_llm_cpu.sh (PyTorch CPU, transformers, peft and the '
+          f'2.1 GB base model; about 3.5 GB, all into {C.REPO / "local-tools"}; downloads only, nothing is uploaded; '
+          'resumes if interrupted; skip with --no-llm-install)', flush=True)
+    r = subprocess.run(['bash', str(C.REPO / 'tools' / 'install_llm_cpu.sh')], env=dict(os.environ, FLOW_PY=sys.executable))
+    if r.returncode != 0:
+        print('  LLM install failed (see the lines above); continuing without the LLM. No internet here: see the top of '
+              'tools/install_llm_cpu.sh (WHEELS=folder, model files copied in)')
+        return False
+    import importlib
+    importlib.invalidate_caches()
+    from lib.scorer import available
+    if available()[0]:
+        return True
+    print('  installed; starting the flow again so this Python picks the new packages up', flush=True)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 def default_policy():
     from lib.scorer import available
     ok, dev, why = available()
+    if not ok and install_llm(why):
+        ok, dev, why = available()
     if ok:
         print(f'LLM available ({why}): using --policy hybrid (LLM + heuristic; --policy llm for the LLM alone)')
         return 'hybrid'
@@ -958,6 +1011,8 @@ def main():
                     help='after a failed s4_route: re-route (up to 2 of) the failed nets with the same guide once as is, once with '
                          'the LEF cell OBS on LAYER (default: the lowest routing layer) removed, once with every OBS removed and '
                          'once without the DEF BLOCKAGES, and say whether the OBS is what blocks them (out/<case>/check_obs/)')
+    ap.add_argument('--no-llm-install', dest='llm_install', action='store_false',
+                    help='do not install the CPU LLM when it is missing (default: install it into local-tools/ and use it)')
     ap.add_argument('--route', default='best', choices=['best', 'all'], help='best: policy top-1 per net; all: every candidate')
     ap.add_argument('--from', dest='start', choices=STAGES, help='re-run from this stage')
     ap.add_argument('--only', choices=STAGES, help='run a single stage')
@@ -982,6 +1037,11 @@ def main():
             case['router'] = 'builtin' if ARGS.router == 'builtin' else 'openroad'
         if ARGS.policy is None:
             ARGS.policy = default_policy()
+        elif uses_llm():
+            from lib.scorer import available
+            ok_, _, why_ = available()
+            if not ok_ and not install_llm(why_):
+                raise C.StageError(f'--policy {ARGS.policy}: the LLM is not available ({why_})')
         if ARGS.compare is None:
             ARGS.compare = uses_llm()
         if ARGS.nets:
@@ -1015,7 +1075,24 @@ def main():
         ARGS.start = 's3_score' if need_llm else 's4_route'
         print(f'ranking settings changed ({old_sel} -> {sel}): re-running from {ARGS.start}')
     self_f.write_text(json.dumps(sel, indent=1))
-    todo = [ARGS.only] if ARGS.only else STAGES[STAGES.index(ARGS.start):] if ARGS.start else STAGES
+    # stages made by older flow code are made again: from the earliest stage whose code changed since the last
+    # complete run (no record yet but earlier results: from s1_import)
+    code_f = out / 'code.json'; code = code_hashes()
+    old_code = json.loads(code_f.read_text()) if code_f.exists() else None
+    if not ARGS.start and not ARGS.only and C.stage_ok(out, 's1_import'):
+        ch = [s for s in code if old_code is None or old_code.get(s) != code[s]]
+        if ch:
+            first = min(ch, key=STAGES.index)
+            print(f'flow code changed since the earlier results in {out} ({", ".join(ch) if old_code else "no record of it"}): '
+                  f're-running from {first}')
+            ARGS.start = first
+    elif ARGS.start and C.stage_ok(out, 's1_import'):
+        ch = [s for s in code if old_code is None or old_code.get(s) != code[s]]
+        first = min(ch, key=STAGES.index) if ch else None
+        if first and STAGES.index(first) < STAGES.index(ARGS.start):
+            print(f'flow code changed ({", ".join(ch) if old_code else "no record of it"}): re-running from {first}, not {ARGS.start}')
+            ARGS.start = first
+    todo =[ARGS.only] if ARGS.only else STAGES[STAGES.index(ARGS.start):] if ARGS.start else STAGES
     for name in STAGES:
         if name not in todo:
             if STAGES.index(name) < STAGES.index(todo[0]) and not C.stage_ok(out, name) and name != 's0_check':
@@ -1032,6 +1109,8 @@ def main():
             print(f'\n[FAIL] {name}\n{e}\n  status: {out / name / "status.json"}'); sys.exit(1)
         except Exception:
             print(f'\n[FAIL] {name} (unexpected error)\n{traceback.format_exc()}  status: {out / name / "status.json"}'); sys.exit(1)
+    if not ARGS.only:   # every stage from the start of this run passed: its results match this code
+        code_f.write_text(json.dumps(code, indent=1))
     A = load_apply(case, out) if C.stage_ok(out, 's6_apply') else None
     if A:
         b, f = A['baseline'], A['final']; K = A['key_metrics']
