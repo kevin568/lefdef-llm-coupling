@@ -1094,13 +1094,15 @@ def main():
             print(f'flow code changed ({", ".join(ch) if old_code else "no record of it"}): re-running from {first}, not {ARGS.start}')
             ARGS.start = first
     todo =[ARGS.only] if ARGS.only else STAGES[STAGES.index(ARGS.start):] if ARGS.start else STAGES
+    redo = False   # once a stage is made again, every later stage is too (their inputs changed)
     for name in STAGES:
         if name not in todo:
             if STAGES.index(name) < STAGES.index(todo[0]) and not C.stage_ok(out, name) and name != 's0_check':
                 print(f'ERROR: stage {name} has not completed; run it first (status: {out / name / "status.json"})'); sys.exit(2)
             continue
-        if not ARGS.start and not ARGS.only and C.stage_ok(out, name) and name not in ('s0_check',):
+        if not redo and not ARGS.start and not ARGS.only and C.stage_ok(out, name) and name not in ('s0_check',):
             print(f'[skip] {name} (already ok)'); continue
+        redo = redo or name != 's0_check'
         print(f'[run ] {name} ...', flush=True)
         try:
             with C.Stage(out, name) as st:
