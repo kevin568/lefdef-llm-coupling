@@ -103,8 +103,8 @@ fi
 
 say "base model Qwen2.5-3B-Instruct, 4-bit (2.1 GB) -> $MODEL"
 # every file is checked against tools/lock/qwen2.5-3b-instruct-bnb-4bit.sha256, so any source with the same bytes
-# will do: MODEL_FROM (a folder you copied the files into), $HF_ENDPOINT (e.g. a company mirror), huggingface.co,
-# hf-mirror.com, ModelScope; the first one that gives the right bytes is used
+# will do: MODEL_FROM (a folder you copied the files into), this repository on GitHub (below), $HF_ENDPOINT (e.g. a
+# company mirror), huggingface.co, hf-mirror.com, ModelScope; the first one that gives the right bytes is used
 SUMS="$REPO/tools/lock/qwen2.5-3b-instruct-bnb-4bit.sha256"
 okfile() { [ -s "$1" ] && [ "$(sha256sum < "$1" | cut -d' ' -f1)" = "$(awk -v f="$2" '$2 == f {print $1}' "$SUMS")" ]; }
 SRCS=()
@@ -112,6 +112,33 @@ SRCS=()
 SRCS+=("https://huggingface.co/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/resolve/$REV"
        "https://hf-mirror.com/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/resolve/$REV"
        "https://www.modelscope.cn/models/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/resolve/master")
+FILES="added_tokens.json config.json generation_config.json merges.txt special_tokens_map.json tokenizer.json
+       tokenizer_config.json vocab.json model.safetensors"
+# first source (unless MODEL_FROM is given): this repository on GitHub, ref refs/model/qwen2.5-3b-instruct-bnb-4bit
+# (not fetched by clone / pull; model.safetensors in 90 MiB parts), fetched with git -- the way git pull already
+# reaches github.com -- into a temporary bare repository
+need=
+for f in $FILES; do okfile "$MODEL/$f" "$f" || need=1; done
+if [ -n "$need" ] && [ -z "${MODEL_FROM:-}" ] && command -v git > /dev/null; then
+  URL=$(git -C "$REPO" remote get-url origin 2> /dev/null || echo https://github.com/kevin568/lefdef-llm-coupling.git)
+  G="$TMPDIR/modelgit"; rm -rf "$G"; git init -q --bare "$G"
+  echo "  fetch the model from $URL (refs/model/qwen2.5-3b-instruct-bnb-4bit, about 2 GB)"
+  if git -C "$G" fetch --depth 1 "$URL" refs/model/qwen2.5-3b-instruct-bnb-4bit; then
+    for f in $FILES; do
+      okfile "$MODEL/$f" "$f" && continue
+      if [ "$f" = model.safetensors ]; then
+        git -C "$G" ls-tree --name-only FETCH_HEAD | grep '^model\.safetensors\.part' | sort |
+          while read -r p; do git -C "$G" show "FETCH_HEAD:$p"; done > "$MODEL/$f.join" || true
+        mv "$MODEL/$f.join" "$MODEL/$f"
+      else
+        git -C "$G" show "FETCH_HEAD:$f" > "$MODEL/$f" || true
+      fi
+    done
+  else
+    echo "    failed: the other sources next"
+  fi
+  rm -rf "$G"
+fi
 missing=()
 for f in added_tokens.json config.json generation_config.json merges.txt special_tokens_map.json tokenizer.json \
          tokenizer_config.json vocab.json model.safetensors; do

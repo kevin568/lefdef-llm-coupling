@@ -197,7 +197,9 @@ With `--route all` all 192 trees are valid and 112 of them improve U.
   same baseline as OpenROAD 26Q2). With that older OpenROAD, the geometry export reads wires from the DEF
   (`flow/lib/defwires.py`, identical shapes to OpenDB's on 6 checked layouts).
 - LLM policy on a GPU: CUDA with at least 8 GB. The base model `unsloth/Qwen2.5-3B-Instruct-bnb-4bit` (about 2 GB)
-  is downloaded from Hugging Face on first use. Read `NOTICE.md` for its license.
+  is downloaded from Hugging Face on first use. Read `NOTICE.md` for its license. For machines that reach github.com
+  but not huggingface.co, a byte-identical copy (with the Qwen license and notice) is in this repository at
+  `refs/model/qwen2.5-3b-instruct-bnb-4bit`, which clone and pull do not fetch; `tools/install_llm_cpu.sh` uses it first.
 - **LLM on a CPU** (no GPU): `flow/run.py` does this by itself when the LLM is missing and the machine has at least
   12 GB of RAM (`--no-llm-install` to skip; if the install fails, e.g. no internet, the flow goes on with the heuristic).
   `bash tools/install_llm_cpu.sh` installs PyTorch (CPU build), transformers and peft into
