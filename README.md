@@ -67,6 +67,12 @@ within spacing of the ignored shapes (those places are not counted in drc.rpt). 
 specs for every net: a layer (`M1`), `own` (OBS of the net's own cells), `MACRO[:LAYER]`, `inst=NAME[:LAYER]`, `all`,
 `blockage[:LAYER]`, `blockage#K`.
 
+Is the OBS really what blocks them? After a failed `s4_route`, add `--check-obs` (or `--check-obs M1,M2`) to the same
+command: it routes up to two of the failed nets again with the same guide and router, once as is, once with the LEF
+cell OBS on that layer removed (default: the lowest routing layer), once with every cell OBS removed and once without
+the DEF BLOCKAGES (OBS kept off the router's own auto ignoring), prints which variant routes and the verdict
+(`CONFIRMED` / `NOT THE OBS` / ...), and saves `out/<case>/check_obs/report.txt`. Nothing else in the output changes.
+
 ## Quick start
 
 ```bash

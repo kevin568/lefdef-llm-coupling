@@ -529,6 +529,144 @@ def s4_route(case, out, st):
         print(f'  note: {len(failures)} of {len(jobs)} guided route(s) failed (first log: {failures[0]["log"]})\n{diag}')
 
 
+def strip_obs(src, dst, layers=None):
+    """copy of a LEF without the cell OBS geometry on these layers (None: every layer) -> number of shapes removed"""
+    lines = Path(src).read_text(errors='replace').splitlines(keepends=True)
+    out, n, i = [], 0, 0
+    while i < len(lines):
+        if lines[i].strip().upper() != 'OBS':
+            out.append(lines[i]); i += 1; continue
+        j = i + 1
+        while j < len(lines) and lines[j].strip().upper() != 'END':
+            j += 1
+        groups = [[None, []]]   # [layer, statements]
+        for s in re.split(r'(?<=;)', ''.join(lines[i + 1:j])):
+            tok = s.split()
+            if not tok:
+                continue
+            if tok[0].upper() == 'LAYER':
+                groups.append([tok[1] if len(tok) > 1 else None, []])
+            groups[-1][1].append(' '.join(tok))
+        keep = []
+        for lay, st in groups:
+            geo = sum(1 for s in st if s.split()[0].upper() in ('RECT', 'POLYGON', 'PATH', 'VIA'))
+            if lay is not None and (layers is None or lay in layers):
+                n += geo
+            else:
+                keep += st
+        if any(s.split()[0].upper() != 'LAYER' for s in keep):
+            ind = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+            out += [lines[i]] + [f'{ind}  {s}\n' for s in keep] + [lines[j] if j < len(lines) else f'{ind}END\n']
+        i = j + 1
+    Path(dst).write_text(''.join(out))
+    return n
+
+
+def check_obs(case, out, which):
+    """A/B test of the failed guided routes: the same net, guide and router, once as is and once with the LEF cell OBS
+    on a layer (default: the lowest routing layer) removed, with every OBS removed and without the DEF BLOCKAGES"""
+    rl = C.lef_routing_layers(case['lefs'])
+    lay = rl[:1] if which in (None, 'auto') else [next((x for x in rl if x.lower() == w.lower()), w) for w in re.split(r'[,\s]+', which) if w]
+    d = out / 'check_obs'; d.mkdir(parents=True, exist_ok=True)
+    base_def = out / 's1_import/base.def'
+    if not base_def.exists():
+        print(f'ERROR: {base_def} is missing; run the flow up to s4_route first'); return 2
+    rj = out / 's4_route/routed.json'
+    fails = [Path(f['log']).parent for f in json.loads(rj.read_text())['failures']] if rj.exists() else []
+    if not fails:
+        fails = sorted(p for p in (out / 's4_route/runs').glob('*') if p.is_dir() and not (p / 'out.def').exists()) \
+            if (out / 's4_route/runs').exists() else []
+    fails = [p for p in fails if (p / 'targets.guide').exists()][:2]
+    if not fails:
+        print(f'ERROR: no failed guided route with a guide file under {out / "s4_route/runs"}'); return 2
+    print(f'check-obs: router {case["router"]}, routing layers {" ".join(rl)}; removing the LEF cell OBS on {"/".join(lay)}')
+    # what the LEF OBS is: shapes per layer, cells almost fully covered
+    lefs = {}
+    for tag, layers in ((f'no OBS on {"/".join(lay)}', set(lay)), ('no OBS at all', None)):
+        ld = d / ('lef_' + safe(tag)); ld.mkdir(exist_ok=True)
+        got = []; nrm = 0
+        for i, l in enumerate(case['lefs']):
+            p = ld / f'{i}_{Path(l).name}'
+            k = strip_obs(l, p, layers); nrm += k
+            got.append(str(p) if k else l)
+        lefs[tag] = (got, nrm)
+    print(f'  LEF cell OBS shapes on {"/".join(lay)}: {lefs[list(lefs)[0]][1]}; on every layer: {lefs["no OBS at all"][1]}')
+    try:
+        sys.path.insert(0, str(C.FLOW / 'lib'))
+        import router as RT
+        T = RT.Tech(case['lefs']); D = RT.Design(str(base_def), T); A = RT.obs_audit(D)
+        for l in lay:
+            cv = A['cov'].get(l, {})
+            full = sorted(m for m, v in cv.items() if v >= .9)
+            print(f'  {l}: {len(cv)} cell type(s) have OBS there, {len(full)} of them covered >= 90%'
+                  + (f' ({", ".join(full[:8])}{" ..." if len(full) > 8 else ""})' if full else ''))
+        print(f'  connected pins lying under their own cell\'s OBS: {len(A["under"])} of {A["pins"]}'
+              + (f' (e.g. {", ".join(A["under"][:4])})' if A['under'] else ''))
+    except Exception as e:   # noqa: BLE001  (the audit is extra evidence; the A/B below is the test)
+        print(f'  (OBS audit skipped: {str(e)[:150]})')
+    defs = {'as is': base_def}
+    t = base_def.read_text(errors='replace')
+    m = re.search(r'^\s*BLOCKAGES\b.*?^\s*END\s+BLOCKAGES\b[^\n]*\n', t, re.M | re.S)
+    if m and re.search(r'-\s*LAYER\b', m.group(0)):
+        (d / 'no_blockages.def').write_text(t[:m.start()] + t[m.end():]); defs['no DEF BLOCKAGES'] = d / 'no_blockages.def'
+    variants = [('as is', case['lefs'], base_def)] + [(k, v[0], base_def) for k, v in lefs.items() if v[1]]
+    if lefs['no OBS at all'][1] == lefs[list(lefs)[0]][1]:
+        variants = [v for v in variants if v[0] != 'no OBS at all']
+    if 'no DEF BLOCKAGES' in defs:
+        variants.append(('no DEF BLOCKAGES', case['lefs'], defs['no DEF BLOCKAGES']))
+    old = os.environ.get('ROUTER_DROP_OBS'); os.environ['ROUTER_DROP_OBS'] = 'off'   # the built-in router drops nothing itself
+
+    def one(job):
+        rd, (tag, lf, df) = job
+        txt = (rd / 'targets.guide').read_text(errors='replace').splitlines()
+        net = txt[0].strip(); rects = [tuple(x.split()[:5]) for x in txt[2:] if len(x.split()) >= 5]
+        sd = d / 'runs' / f'{rd.name}__{safe(tag)}'
+        for f in ('out.def', 'route.log'):
+            if (sd / f).exists():
+                (sd / f).unlink()
+        try:
+            route_job(dict(case, lefs=lf), df, [net], 'guide', sd, {net: rects})
+            drc = sd / 'drc.rpt'
+            nv = len([x for x in drc.read_text().splitlines() if x.strip()]) if drc.exists() and case['router'] == 'builtin' else None
+            return net, tag, 'routed' + (f' ({nv} self-check violation(s))' if nv else ''), sd
+        except Exception as e:   # noqa: BLE001
+            lg = sd / 'route.log'; L = lg.read_text(errors='replace').splitlines() if lg.exists() else []
+            er = next((x.strip() for x in L if re.search(r'\[ERROR|^Error|FLOW_ERROR', x.strip())), str(e).splitlines()[0])
+            return net, tag, 'FAILED: ' + er[:260], sd
+    jobs = [(rd, v) for rd in fails for v in variants]
+    try:
+        with ThreadPoolExecutor(ARGS.jobs) as ex:
+            res = list(ex.map(one, jobs))
+    finally:
+        if old is None:
+            os.environ.pop('ROUTER_DROP_OBS', None)
+        else:
+            os.environ['ROUTER_DROP_OBS'] = old
+    rows = []; ok = {}
+    for net, tag, r, sd in res:
+        rows.append(f'  {net:<28} {tag:<22} {r}   ({sd / "route.log"})'); ok.setdefault(tag, []).append(r.startswith('routed'))
+    pas = {k: all(v) for k, v in ok.items()}; some = {k: any(v) for k, v in ok.items()}
+    lt = f'no OBS on {"/".join(lay)}'
+    if some.get('as is'):
+        verdict = 'NOT REPRODUCED: the guided route passes as is now (the earlier failure came from something else, e.g. a timeout)'
+    elif some.get(lt):
+        verdict = (f'CONFIRMED: the LEF cell OBS on {"/".join(lay)} blocks these nets: the same net, guide and router fail with it '
+                   f'and route without it. The flow can ignore it: --drop-obs {",".join(lay)} (or the default auto, which ignores '
+                   'only the OBS over the blocked pins)')
+    elif some.get('no OBS at all'):
+        verdict = (f'OBS, but not only on {"/".join(lay)}: the nets route only when every cell OBS is removed '
+                   '(try --check-obs with other layers to find which)')
+    elif some.get('no DEF BLOCKAGES'):
+        verdict = 'DEF BLOCKAGES: the nets route once the DEF routing blockages are removed (--drop-obs blockage)'
+    else:
+        verdict = ('NOT THE OBS: these nets fail even with every LEF cell OBS' + (' and DEF blockage' if 'no DEF BLOCKAGES' in ok else '')
+                   + ' removed, so the OBS is not what stops them; the cause is in the error above')
+    rep = '\n'.join(['  net                          variant                result'] + rows + ['', '  ' + verdict])
+    print(rep); (d / 'report.txt').write_text(rep + '\n')
+    print(f'  report: {d / "report.txt"}')
+    return 0
+
+
 def s5_extract(case, out, st):
     b = out / 's1_import'
     base = json.loads((b / 'baseline.json').read_text()); base_sp = spef.read(b / 'base.spef'); ref = def_nets(b / 'base.def')
@@ -805,6 +943,10 @@ def main():
                          'an OBS blocks its pins, ignore exactly those OBS for that net and report it (relaxation.txt); '
                          'off: never; or specs for every net: a layer (M1), own (OBS of the net\'s own cells), MACRO[:LAYER], '
                          'inst=NAME[:LAYER], all, blockage[:LAYER] (DEF BLOCKAGES)')
+    ap.add_argument('--check-obs', nargs='?', const='auto', metavar='LAYER[,LAYER]',
+                    help='after a failed s4_route: re-route (up to 2 of) the failed nets with the same guide once as is, once with '
+                         'the LEF cell OBS on LAYER (default: the lowest routing layer) removed, once with every OBS removed and '
+                         'once without the DEF BLOCKAGES, and say whether the OBS is what blocks them (out/<case>/check_obs/)')
     ap.add_argument('--route', default='best', choices=['best', 'all'], help='best: policy top-1 per net; all: every candidate')
     ap.add_argument('--from', dest='start', choices=STAGES, help='re-run from this stage')
     ap.add_argument('--only', choices=STAGES, help='run a single stage')
@@ -851,6 +993,8 @@ def main():
               f'  Start again in that folder (deletes the earlier results):  rm -rf {out}\n'
               f'  or keep them and write elsewhere: add  --out {out}_2  to the command'); sys.exit(2)
     fpf.write_text(json.dumps(fp, indent=1))
+    if ARGS.check_obs:
+        sys.exit(check_obs(case, out, ARGS.check_obs))
     # ranking settings: finished s3+ stages are reused only for the same policy / adapter / compare / route
     sel = dict(policy=ARGS.policy, adapter=ARGS.adapter, compare=ARGS.compare, route=ARGS.route)
     self_f = out / 'selection.json'; old_sel = json.loads(self_f.read_text()) if self_f.exists() else None
