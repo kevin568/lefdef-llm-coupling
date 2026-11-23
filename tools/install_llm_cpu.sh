@@ -44,7 +44,7 @@ if [ "$free_kb" -lt "$need_kb" ] && [ -z "${FORCE:-}" ]; then
 fi
 
 say "which download sites this machine reaches (curl, 10 s each; a company firewall may block some)"
-for h in conda.anaconda.org huggingface.co cas-bridge.xethub.hf.co files.pythonhosted.org download-r2.pytorch.org; do
+for h in conda.anaconda.org huggingface.co cas-bridge.xethub.hf.co hf-mirror.com www.modelscope.cn files.pythonhosted.org download-r2.pytorch.org; do
   if curl -sS -m 10 -o /dev/null -I "https://$h/" 2> "$TMPDIR/net"; then
     echo "  ok       $h"
   else
@@ -102,13 +102,47 @@ fi
 "$PY" -c "import torch, transformers, peft; print('  torch', torch.__version__, 'transformers', transformers.__version__, 'peft', peft.__version__)"
 
 say "base model Qwen2.5-3B-Instruct, 4-bit (2.1 GB) -> $MODEL"
+# every file is checked against tools/lock/qwen2.5-3b-instruct-bnb-4bit.sha256, so any source with the same bytes
+# will do: MODEL_FROM (a folder you copied the files into), $HF_ENDPOINT (e.g. a company mirror), huggingface.co,
+# hf-mirror.com, ModelScope; the first one that gives the right bytes is used
+SUMS="$REPO/tools/lock/qwen2.5-3b-instruct-bnb-4bit.sha256"
+okfile() { [ -s "$1" ] && [ "$(sha256sum < "$1" | cut -d' ' -f1)" = "$(awk -v f="$2" '$2 == f {print $1}' "$SUMS")" ]; }
+SRCS=()
+[ -z "${HF_ENDPOINT:-}" ] || SRCS+=("${HF_ENDPOINT%/}/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/resolve/$REV")
+SRCS+=("https://huggingface.co/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/resolve/$REV"
+       "https://hf-mirror.com/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/resolve/$REV"
+       "https://www.modelscope.cn/models/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/resolve/master")
+missing=()
 for f in added_tokens.json config.json generation_config.json merges.txt special_tokens_map.json tokenizer.json \
          tokenizer_config.json vocab.json model.safetensors; do
-  if [ -s "$MODEL/$f" ]; then echo "  have $f"; continue; fi
-  echo "  download $f"
-  curl -fL --retry 5 -C - -o "$MODEL/$f.part" "$HF/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/resolve/$REV/$f"
-  mv "$MODEL/$f.part" "$MODEL/$f"
+  if okfile "$MODEL/$f" "$f"; then echo "  have $f"; continue; fi
+  if [ -n "${MODEL_FROM:-}" ] && okfile "$MODEL_FROM/$f" "$f"; then
+    echo "  copy $f from $MODEL_FROM"; cp "$MODEL_FROM/$f" "$MODEL/$f"; continue
+  fi
+  got=
+  for k in "${!SRCS[@]}"; do
+    case " ${dead:-} " in *" $k "*) continue ;; esac   # a source that failed once is not tried again
+    s="${SRCS[$k]}"
+    echo "  download $f from ${s#https://}"
+    if [ "$f" = model.safetensors ]; then pr=--progress-bar; else pr=-sS; fi
+    if curl -fL $pr --connect-timeout 15 --retry 2 -C - -o "$MODEL/$f.part$k" "$s/$f"; then
+      if okfile "$MODEL/$f.part$k" "$f"; then mv "$MODEL/$f.part$k" "$MODEL/$f"; got=1; break; fi
+      echo "    not the same file (sha256 differs): next source"; rm -f "$MODEL/$f.part$k"
+    else
+      echo "    failed: this source is skipped from now on"; dead="${dead:-} $k"
+    fi
+  done
+  [ -n "$got" ] || missing+=("$f")
 done
+if [ ${#missing[@]} -gt 0 ]; then
+  echo
+  echo "  the model could not be downloaded here (every source above is blocked or failed): ${missing[*]}"
+  echo "  Get these files of unsloth/Qwen2.5-3B-Instruct-bnb-4bit (revision $REV) where you can, e.g."
+  echo "    https://huggingface.co/unsloth/Qwen2.5-3B-Instruct-bnb-4bit/tree/$REV"
+  echo "  put them in one folder on this machine, and run again with:  MODEL_FROM=/that/folder"
+  echo "  (or copy them straight into $MODEL/). Their sha256 must match $SUMS."
+  exit 1
+fi
 say "checksums"
 (cd "$MODEL" && sha256sum -c "$REPO/tools/lock/qwen2.5-3b-instruct-bnb-4bit.sha256")
 rm -rf "$TMPDIR"

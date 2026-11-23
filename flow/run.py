@@ -951,8 +951,9 @@ def install_llm(why):
           'resumes if interrupted; skip with --no-llm-install)', flush=True)
     r = subprocess.run(['bash', str(C.REPO / 'tools' / 'install_llm_cpu.sh')], env=dict(os.environ, FLOW_PY=sys.executable))
     if r.returncode != 0:
-        print('  LLM install failed (see the lines above); continuing without the LLM. No internet here: see the top of '
-              'tools/install_llm_cpu.sh (WHEELS=folder, model files copied in)')
+        print('  LLM install failed (see the lines above); continuing without the LLM. Model files blocked here: copy them '
+              'into a folder and run again with MODEL_FROM=that_folder (tcsh: setenv MODEL_FROM /that/folder); '
+              'everything else: see the top of tools/install_llm_cpu.sh')
         return False
     import importlib
     importlib.invalidate_caches()
