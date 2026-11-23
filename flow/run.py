@@ -77,8 +77,10 @@ def route_job(case, state_def, nets, mode, rundir, guide_rects=None):
         t0 = _t.monotonic()
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=3600)
         if r.returncode != 0 or not (rundir / 'out.def').exists():
-            tail = log.read_text(errors='replace')[-800:] if log.exists() else r.stdout.decode(errors='replace')[-800:]
-            raise C.StageError(f'built-in router failed: {tail.strip()} (log: {log})')
+            txt = log.read_text(errors='replace') if log.exists() else r.stdout.decode(errors='replace')
+            # the router's own error line first (the DIAG evidence after it is shown by route_diagnosis)
+            er = next((x.strip() for x in txt.splitlines() if x.startswith('Error')), txt.strip()[-800:])
+            raise C.StageError(f'built-in router failed: {er[:1500]} (log: {log})')
         return _t.monotonic() - t0
     sec = C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(case['lefs']), STATE_DEF=state_def, OUT_DEF=rundir / 'out.def',
                          LAYERS=case['layers'], TARGETS=tcl_list(nets), MODE=mode, GUIDE=guide, DRC=rundir / 'drc.rpt',
@@ -525,7 +527,7 @@ def s4_route(case, out, st):
         diag = route_diagnosis(logs, st.dir / 'diagnosis.txt') or route_errors(logs)
         if len(failures) == len(jobs):
             raise C.StageError(f'every guided route failed ({len(failures)}); first log: {failures[0]["log"]}\n'
-                               f'  first error: {failures[0]["error"][:600]}\n{diag}')
+                               f'  first error: {failures[0]["error"][:1500]}\n{diag}')
         print(f'  note: {len(failures)} of {len(jobs)} guided route(s) failed (first log: {failures[0]["log"]})\n{diag}')
 
 
@@ -558,7 +560,8 @@ def strip_obs(src, dst, layers=None):
             ind = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
             out += [lines[i]] + [f'{ind}  {s}\n' for s in keep] + [lines[j] if j < len(lines) else f'{ind}END\n']
         i = j + 1
-    Path(dst).write_text(''.join(out))
+    if n:   # only a LEF that changes is copied (the disk may be nearly full)
+        Path(dst).write_text(''.join(out))
     return n
 
 
@@ -632,7 +635,8 @@ def check_obs(case, out, which):
         except Exception as e:   # noqa: BLE001
             lg = sd / 'route.log'; L = lg.read_text(errors='replace').splitlines() if lg.exists() else []
             er = next((x.strip() for x in L if re.search(r'\[ERROR|^Error|FLOW_ERROR', x.strip())), str(e).splitlines()[0])
-            return net, tag, 'FAILED: ' + er[:260], sd
+            lim = f' [search limit hit in {er.count("[SEARCH LIMIT")} attempt(s)]' if '[SEARCH LIMIT' in er else ''
+            return net, tag, 'FAILED: ' + er[:260] + lim, sd
     jobs = [(rd, v) for rd in fails for v in variants]
     try:
         with ThreadPoolExecutor(ARGS.jobs) as ex:

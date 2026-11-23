@@ -555,6 +555,8 @@ class Router(object):
         """terms: [((inst, pin), shapes)] to connect instead of the net's pins (e.g. pins with their kept access wiring)"""
         D, T, u = self.D, self.T, self.D.dbu
         info = D.nets[net]
+        self.capped = False
+        self.max_expand = int(__import__('os').environ.get('ROUTER_MAX_EXPAND', '4000000'))
         pins = []
         for inst, pin in ([] if terms else info['conns']):
             sh = [(l, r) for l, r in D.pin_shapes(inst, pin) if l in T.routing]
@@ -725,7 +727,9 @@ class Router(object):
                     lay = sorted({self.L[k] for k, _, _ in nodes})
                     return f'{len(nodes)} access node(s) on {"/".join(lay)}, {free} free neighbour(s)'
                 raise NoPath(f'{net}: no path to pin {pins[ti][0][0]}/{pins[ti][0][1]} ({why(list(goal))}; '
-                             f'from {pins[0][0][0]}/{pins[0][0][1]}: {why(list(first))}; grid {nx}x{ny}x{L}, pitch {self.P})', pins[ti][0], pins[0][0])
+                             f'from {pins[0][0][0]}/{pins[0][0][1]}: {why(list(first))}; grid {nx}x{ny}x{L}, pitch {self.P})'
+                             + (f' [SEARCH LIMIT: stopped after {self.max_expand} expanded nodes without reaching the pin, so a path '
+                                f'may still exist; ROUTER_MAX_EXPAND raises the limit]' if self.capped else ''), pins[ti][0], pins[0][0])
             if not path_nodes:
                 tree = set()
                 if first.get(p[0]):
@@ -755,7 +759,8 @@ class Router(object):
                     out.append(par[out[-1]])
                 return out[::-1]
             n += 1
-            if n > 4000000:
+            if n > self.max_expand:
+                self.capped = True   # gave up: a path may still exist (reported, not taken for a blocked pin)
                 return None
             k, i, j = cur
             hor = self.hor[k]
@@ -1266,6 +1271,14 @@ def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None
                 break
             except NoPath as e:
                 verdict, why, ev, pin, info = diagnose_pins(D, R, name, e)
+                ncap, natt = str(e).count('[SEARCH LIMIT'), str(e).count(' | ') + 1
+                if ncap:
+                    ev = [f'search limit: {ncap} of {natt} attempt(s) stopped at the node limit ({getattr(R, 'max_expand', 0)} nodes) without a '
+                          f'path; such an attempt says nothing about the pin'] + ev
+                if ncap == natt:   # every attempt gave up: the pin evidence below may be real, but it is not why these stopped
+                    why = (f'every attempt stopped at the search limit ({getattr(R, 'max_expand', 0)} expanded nodes) before it found a path, so '
+                           f'this is the router giving up, not a proven block (pin evidence: {verdict}: {why})')
+                    verdict = 'ROUTER'
                 e.diag = [f'DIAG {name} pin {"/".join(pin) if pin else "-"}: {verdict}: {why}'] + [f'DIAG   {x}' for x in ev]
                 new = [f'inst={i}:{l}' for i, l in sorted(info['obs'])] + sorted(info.get('blk', ()))
                 new = [s for s in new if s not in D.drop]
