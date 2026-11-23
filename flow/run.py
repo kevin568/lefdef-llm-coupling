@@ -1134,7 +1134,73 @@ def main():
         for k, x in R['rankers'].items():
             print(f'  {k:10s} {x["nets"]:4d} {x["valid"]:5d} {x["kept"]:4d}   {x["cc_before"]:10.3f} -> {x["cc_after"]:10.3f}   '
                   f'{x["change_pct"]:+7.2f}%  {x["mean_U"]:+.4f}  {x["same_as_heuristic"]}/{x["nets"]}')
+    why = explain(out, case)
+    if why:
+        print(why)
     print(f'\nfull report: {out / "report.md"}')
+
+
+def explain(out, case):
+    """why few reroutes count: the nets s2 left out (first diagnosis line of each) and every measured candidate with
+    the reason it is not valid; also written to out/why.txt"""
+    L = []
+    d2 = out / 's2_candidates'
+    s2 = json.loads((d2 / 'status.json').read_text()) if (d2 / 'status.json').exists() else {}
+    bad = s2.get('route_failed_nets') or []
+    if s2:
+        L.append(f'\n=== why: nets ({s2.get("eligible_nets", "?")} eligible, {s2.get("nets", "?")} kept for candidates, '
+                 f'{len(bad)} left out because the router-default reroute failed) ===')
+        heads = []
+        if (d2 / 'diagnosis.txt').exists():
+            heads = [x for x in (d2 / 'diagnosis.txt').read_text(errors='replace').splitlines() if x and not x.startswith(' ')]
+        for h in heads[:20]:
+            L.append('  ' + h[:170])
+        if len(heads) > 20:
+            L.append(f'  ... {len(heads) - 20} more in {d2 / "diagnosis.txt"}')
+        if bad and not heads:
+            L.append('  ' + ', '.join(bad[:20]))
+    m5 = out / 's5_extract' / 'measurements.json'
+    if m5.exists():
+        rows = json.loads(m5.read_text())['rows']
+        known = set(known_violations(case, out))
+        L.append(f'\n=== why: candidates ({len(rows)} measured, {sum(1 for r in rows if r.get("valid"))} valid; '
+                 'valid = connected, no new DRC, no other net changed); per net: ===')
+        full = []; per = {}
+        for r in rows:
+            kinds = []
+            if r.get('error'):
+                reason = 'measure failed: ' + r['error'][:80]; kinds = ['measure failed']
+            elif not r.get('target_routed'):
+                reason = 'not connected'; kinds = ['not connected']
+            else:
+                parts = []
+                if r.get('new_violations'):
+                    new = [v for v in G.violations(Path(r['dir']) / 'drc.rpt') if v not in known]
+                    first = (new[0][0] + ' ' + new[0][1])[:70] if new else ''
+                    parts.append(f'{r["new_violations"]} new DRC (first: {first})')
+                    kinds += ['DRC ' + (v[0] or '?') for v in new] or ['DRC']
+                if r.get('other_nets_changed'):
+                    parts.append(f'changes {r["other_nets_changed"]} other net(s)'); kinds.append('other net changed')
+                reason = '; '.join(parts) or 'ok'
+            ok = 'VALID' if r.get('valid') else 'no   '
+            tree = str(r.get('candidate_id', '')).split(':')[-1]
+            cb, ca = r.get('net_cc_before_fF', 0.) or 0., r.get('net_cc_after_fF', 0.) or 0.
+            full.append(f'  {ok} {r["net"][:24]:<24} {tree:<10} {cb:8.2f} -> {ca:8.2f}  {reason}')
+            p = per.setdefault(r['net'], dict(n=0, v=0, cb=cb, best=None, why={}))
+            p['n'] += 1
+            if r.get('valid'):
+                p['v'] += 1; p['best'] = ca if p['best'] is None else min(p['best'], ca)
+            for k in kinds:
+                p['why'][k] = p['why'].get(k, 0) + 1
+        for n, p in sorted(per.items(), key=lambda kv: -kv[1]['cb']):
+            best = f'best {p["best"]:.2f}' if p['best'] is not None else 'none valid'
+            whys = ', '.join(f'{k} x{c}' for k, c in sorted(p['why'].items(), key=lambda kv: -kv[1]))
+            L.append(f'  {n[:24]:<24} {p["cb"]:8.2f}  valid {p["v"]}/{p["n"]} ({best})' + (f'  invalid: {whys}' if whys else ''))
+        L.append(f'  every candidate: {out / "why.txt"}')
+    txt = '\n'.join(L)
+    if txt:
+        (out / 'why.txt').write_text(txt.strip() + '\n' + ('\n' + '\n'.join(full) + '\n' if m5.exists() else ''))
+    return txt
 
 
 if __name__ == '__main__':
