@@ -1272,11 +1272,12 @@ def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None
             except NoPath as e:
                 verdict, why, ev, pin, info = diagnose_pins(D, R, name, e)
                 ncap, natt = str(e).count('[SEARCH LIMIT'), str(e).count(' | ') + 1
+                lim = getattr(R, 'max_expand', 0)
                 if ncap:
-                    ev = [f'search limit: {ncap} of {natt} attempt(s) stopped at the node limit ({getattr(R, 'max_expand', 0)} nodes) without a '
+                    ev = [f'search limit: {ncap} of {natt} attempt(s) stopped at the node limit ({lim} nodes) without a '
                           f'path; such an attempt says nothing about the pin'] + ev
                 if ncap == natt:   # every attempt gave up: the pin evidence below may be real, but it is not why these stopped
-                    why = (f'every attempt stopped at the search limit ({getattr(R, 'max_expand', 0)} expanded nodes) before it found a path, so '
+                    why = (f'every attempt stopped at the search limit ({lim} expanded nodes) before it found a path, so '
                            f'this is the router giving up, not a proven block (pin evidence: {verdict}: {why})')
                     verdict = 'ROUTER'
                 e.diag = [f'DIAG {name} pin {"/".join(pin) if pin else "-"}: {verdict}: {why}'] + [f'DIAG   {x}' for x in ev]

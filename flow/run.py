@@ -77,9 +77,16 @@ def route_job(case, state_def, nets, mode, rundir, guide_rects=None):
         t0 = _t.monotonic()
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=3600)
         if r.returncode != 0 or not (rundir / 'out.def').exists():
-            txt = log.read_text(errors='replace') if log.exists() else r.stdout.decode(errors='replace')
+            txt = log.read_text(errors='replace') if log.exists() else ''
             # the router's own error line first (the DIAG evidence after it is shown by route_diagnosis)
-            er = next((x.strip() for x in txt.splitlines() if x.startswith('Error')), txt.strip()[-800:])
+            er = next((x.strip() for x in txt.splitlines() if x.startswith('Error')), None)
+            if er is None:   # it died before writing its error (crash, Python error, killed): keep its own output in the log
+                outp = r.stdout.decode(errors='replace').strip()
+                last = [x.strip() for x in outp.splitlines() if x.strip()]
+                er = (f'Error: the built-in router process exited with code {r.returncode}: '
+                      + (last[-1] if last else 'no output (killed, e.g. out of memory?)'))
+                with open(log, 'a') as fh:
+                    fh.write(outp[-3000:] + '\n' + er + '\n')
             raise C.StageError(f'built-in router failed: {er[:1500]} (log: {log})')
         return _t.monotonic() - t0
     sec = C.run_openroad(C.OR_DIR / 'route.tcl', dict(LEFS=' '.join(case['lefs']), STATE_DEF=state_def, OUT_DEF=rundir / 'out.def',
