@@ -1185,6 +1185,13 @@ def split_terminals(D, R, name, min_pitches=3):
     keep += [p for p in pcs if p['kind'] == 'via' and any(_touch(a, b) for a in p['shapes'] for b in base)]
     items = [('pin', k, s) for k, (_, s) in enumerate(pins)] + [('piece', k, p['shapes']) for k, p in enumerate(keep)]
     par = list(range(len(items)))
+    # a pin whose LEF shape the net's own wiring stops just short of (cell abstracts that do not match the layout,
+    # e.g. one transistor macro for every finger count) is connected by that wiring: the piece within this gap on the
+    # same layer joins the pin, so the pin needs no new access (ROUTER_PIN_SNAP um, 0 = touching only)
+    tol = int(round(float(__import__('os').environ.get('ROUTER_PIN_SNAP', '0.35')) * D.dbu))
+    near = lambda a, b: (a[0] == b[0] and a[1][0] - tol <= b[1][2] and b[1][0] - tol <= a[1][2]
+                         and a[1][1] - tol <= b[1][3] and b[1][1] - tol <= a[1][3])
+    snapped = set()
 
     def f(x):
         while par[x] != x:
@@ -1192,8 +1199,12 @@ def split_terminals(D, R, name, min_pitches=3):
         return x
     for a in range(len(items)):
         for b in range(a + 1, len(items)):
-            if f(a) != f(b) and any(_touch(x, y) for x in items[a][2] for y in items[b][2]):
+            if f(a) == f(b):
+                continue
+            if any(_touch(x, y) for x in items[a][2] for y in items[b][2]):
                 par[f(a)] = f(b)
+            elif tol and items[a][0] == 'pin' and items[b][0] == 'piece' and any(near(x, y) for x in items[a][2] for y in items[b][2]):
+                par[f(a)] = f(b); snapped.add(a)
     comps = {}
     for k, it in enumerate(items):
         comps.setdefault(f(k), []).append(it)
@@ -1207,7 +1218,10 @@ def split_terminals(D, R, name, min_pitches=3):
     if len(terms) < 2:
         raise RuntimeError(f'{name}: nothing to reroute with the pin access kept ({len(terms)} connected part(s))')
     out = [(p['layer'], p['pts'], p.get('via') or (('RECT', p['rel']) if p['kind'] == 'rect' else None)) for p in kept]
-    return terms, out, f'kept {len(kept)} of {len(pcs)} wiring pieces (those < {min_pitches} pitches), {len(terms)} parts to connect'
+    sn = len(snapped)
+    return terms, out, (f'kept {len(kept)} of {len(pcs)} wiring pieces (those < {min_pitches} pitches), {len(terms)} parts to connect'
+                        + (f'; {sn} pin(s) taken as connected by their own wiring that stops within {tol / D.dbu:g} um of '
+                           'the LEF pin (abstract does not match the layout)' if sn else ''))
 
 
 def route_one(D, R, name, g, mode, logl):
