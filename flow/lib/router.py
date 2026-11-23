@@ -489,6 +489,30 @@ class Router(object):
         if i > 0:
             self.below = tech.rorder[i - 1]
         self.hor = [tech.routing[l]['dir'].startswith('H') for l in layers]
+        # a layer pair the LEF gives no fixed via for (and the flow could not make one from a VIARULE): use the via the
+        # design itself uses there (DEF VIAS, the one the signal wiring uses most); a pair with no via at all gets no
+        # via moves, so the search never plans a layer change that cannot be written
+        self.def_vias = {}
+        stack = ([self.below] if self.below else []) + list(layers)
+        use = None
+        for lo, hi in zip(stack, stack[1:]):
+            if tech.via_for(lo, hi):
+                continue
+            cands = [n for n, sh in design.vias.items() if sh and lo in {l for l, _ in sh} and hi in {l for l, _ in sh}
+                     and not ({l for l, _ in sh} - {lo, hi} - {l for l, _ in sh if tech.types.get(l) == 'CUT'})]
+            if not cands:
+                continue
+            if use is None:
+                m = re.search(r'^\s*NETS\s+\d+\s*;(.*?)^\s*END\s+NETS\b', design.text, re.M | re.S)
+                use = {}
+                for tok in (m.group(1).split() if m else ()):
+                    if tok in design.vias:
+                        use[tok] = use.get(tok, 0) + 1
+            area = lambda n: sum((r[2] - r[0]) * (r[3] - r[1]) for l, r in design.vias[n] if l in (lo, hi))
+            best = min(cands, key=lambda n: (-use.get(n, 0), area(n), n))
+            tech.vias[best] = [(l, tuple(v / u for v in r)) for l, r in design.vias[best]]
+            self.def_vias[(lo, hi)] = (best, use.get(best, 0))
+        self.novia = {k for k in range(len(layers) - 1) if not tech.via_for(layers[k], layers[k + 1])}
 
     def _offset(self, l):
         T, D = self.T, self.D; u = D.dbu; R = T.routing[l]; p = self.pitch[l]; w = int(round(R['width'] * u))
@@ -769,6 +793,8 @@ class Router(object):
                 if not (0 <= kk < L and 0 <= ii < nx and 0 <= jj < ny):
                     continue
                 if dk:
+                    if min(k, kk) in self.novia:   # no via between these layers (neither LEF nor DEF has one)
+                        continue
                     if (viablk[k, i, j] or viablk[kk, ii, jj]) and not (relax_goal_via and (kk, ii, jj) in goal):
                         continue
                     if blocked[kk, ii, jj] and (kk, ii, jj) not in goal:
@@ -1243,6 +1269,13 @@ def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None
             guides[m.group(1)] = [tuple(int(v) for v in ln.split()[:4]) for ln in m.group(2).splitlines() if ln.strip()]
     R = Router(T, D, sig)
     text = D.text; logl = [f'FLOW builtin router: layers {"-".join([sig[0], sig[-1]])}, grid pitch {R.P} dbu']
+    for (lo, hi), (vn, k) in R.def_vias.items():
+        logl.append(f'FLOW the LEF has no fixed via between {lo} and {hi}: using the DEF via {vn} '
+                    f'(used {k} time(s) by the original signal wiring)')
+    nov = [f'{sig[k]}-{sig[k + 1]}' for k in sorted(R.novia)]
+    if nov:
+        logl.append(f'FLOW no via at all between {", ".join(nov)} (neither a LEF VIA / VIARULE nor a DEF via): '
+                    'routes do not change layer there')
     viol = []
     # GCELLGRID the flow reads (from the DEF, else 15 tracks)
     x1, y1, x2, y2 = D.die
@@ -1273,6 +1306,9 @@ def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None
                 verdict, why, ev, pin, info = diagnose_pins(D, R, name, e)
                 ncap, natt = str(e).count('[SEARCH LIMIT'), str(e).count(' | ') + 1
                 lim = getattr(R, 'max_expand', 0)
+                if nov:
+                    ev = [f'[design] no via at all between {", ".join(nov)}: neither the LEF (VIA / VIARULE) nor the DEF VIAS '
+                          'define one, so no route can change layer there (LEF/DEF)'] + ev
                 if ncap:
                     ev = [f'search limit: {ncap} of {natt} attempt(s) stopped at the node limit ({lim} nodes) without a '
                           f'path; such an attempt says nothing about the pin'] + ev

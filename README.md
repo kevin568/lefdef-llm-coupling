@@ -67,6 +67,11 @@ within spacing of the ignored shapes (those places are not counted in drc.rpt). 
 specs for every net: a layer (`M1`), `own` (OBS of the net's own cells), `MACRO[:LAYER]`, `inst=NAME[:LAYER]`, `all`,
 `blockage[:LAYER]`, `blockage#K`.
 
+Vias: the built-in router uses the LEF's fixed vias (and the ones the flow makes from VIARULEs). Where the LEF has none
+for a layer pair (e.g. a PDK whose vias exist only as DEF `VIAS` written by the layout tool), it uses the DEF via the
+original signal wiring uses most there (route.log: `the LEF has no fixed via between ...`); with no via anywhere, routes
+do not change layer there and the diagnosis says so.
+
 Is the OBS really what blocks them? After a failed `s4_route`, add `--check-obs` (or `--check-obs M1,M2`) to the same
 command: it routes up to two of the failed nets again with the same guide and router, once as is, once with the LEF
 cell OBS on that layer removed (default: the lowest routing layer), once with every cell OBS removed and once without
