@@ -1,0 +1,9 @@
+Qwen is licensed under the Qwen RESEARCH LICENSE AGREEMENT, Copyright (c) Alibaba Cloud. All Rights Reserved.
+
+These are the files of unsloth/Qwen2.5-3B-Instruct-bnb-4bit (Hugging Face, revision
+2672b588848527e456d320c11926c794539f47d5), a 4-bit quantization of Qwen/Qwen2.5-3B-Instruct, copied for machines
+that cannot reach huggingface.co. The agreement is in LICENSE (research or evaluation use only).
+
+Changed: model.safetensors is split into model.safetensors.part00 ... part21 (90 MiB each, the last one shorter) so
+that git can hold it. Joined in order they are byte for byte the original file (sha256 f49f0825fce862ef2ee0d33675127
+3b3c849b82a1854530c9399ff4e3df8abad). All other files are unchanged.
