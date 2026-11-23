@@ -10,9 +10,11 @@
 #
 # Needs about 3.5 GB free in FOLDER (model 2.1 GB, Python packages about 1.2 GB); about 13 GB of RAM while scoring.
 # Nothing is written outside FOLDER. Running again resumes interrupted downloads. Everything is downloaded with curl
-# (the system's HTTPS certificates, like git): the pinned wheels in tools/lock/llm-cpu-py311.txt (for the flow's
-# Python 3.11 from tools/install_openroad_conda.sh; pip then installs offline) and the model from huggingface.co (or
-# $HF_ENDPOINT for a mirror). Another Python version: pip downloads (PyPI, download.pytorch.org). Offline machine: put the wheels in a
+# (the system's HTTPS certificates, like git), and it first prints which download sites this machine reaches. The
+# flow's conda Python 3.11 (tools/install_openroad_conda.sh): the pinned conda-forge packages in
+# tools/lock/llm-cpu-conda-py311.txt (conda.anaconda.org; conda installs offline). Another Python 3.11: the pinned
+# wheels in tools/lock/llm-cpu-py311.txt (download.pytorch.org, files.pythonhosted.org; pip installs offline). Other
+# versions: pip downloads. The model comes from huggingface.co (or $HF_ENDPOINT for a mirror). Offline machine: put the wheels in a
 # folder and set WHEELS=folder; copy the model files (list below) into FOLDER/models/Qwen2.5-3B-Instruct-bnb-4bit/.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -41,12 +43,42 @@ if [ "$free_kb" -lt "$need_kb" ] && [ -z "${FORCE:-}" ]; then
   echo "  (FORCE=1 to try anyway)"; exit 1
 fi
 
-say "Python packages (CPU build of PyTorch) -> $("$PY" -c 'import sys; print(sys.prefix)')"
+say "which download sites this machine reaches (curl, 10 s each; a company firewall may block some)"
+for h in conda.anaconda.org huggingface.co cas-bridge.xethub.hf.co files.pythonhosted.org download-r2.pytorch.org; do
+  if curl -sS -m 10 -o /dev/null -I "https://$h/" 2> "$TMPDIR/net"; then
+    echo "  ok       $h"
+  else
+    echo "  BLOCKED  $h  ($(tail -n 1 "$TMPDIR/net"))"
+  fi
+done
+
+ENVP=$("$PY" -c 'import sys; print(sys.prefix)')
+PYV=$("$PY" -c 'import sys, platform; print("%d.%d-%s" % (sys.version_info[:2] + (platform.machine(),)))')
+CONDA="$PREFIX/miniforge/bin/conda"
+say "Python packages (CPU build of PyTorch) -> $ENVP"
 if "$PY" -c "import torch, transformers, peft, safetensors" > /dev/null 2>&1; then
   echo "  already installed"
 elif [ -n "${WHEELS:-}" ]; then
   "$PY" -m pip install --no-index --find-links "$WHEELS" torch transformers peft safetensors accelerate
-elif [ "$("$PY" -c 'import sys, platform; print("%d.%d-%s" % (sys.version_info[:2] + (platform.machine(),)))')" = 3.11-x86_64 ]; then
+elif [ "$PYV" = 3.11-x86_64 ] && [ -d "$ENVP/conda-meta" ] && [ -x "$CONDA" ]; then
+  # the flow's conda Python (tools/install_openroad_conda.sh): the tested conda-forge set (tools/lock/
+  # llm-cpu-conda-py311.txt) from conda.anaconda.org -- the site the OpenROAD install already downloads from --
+  # downloaded with curl (system certificates, like git), md5 checked, installed by conda offline
+  PKG="$PREFIX/pkgs-llm"; mkdir -p "$PKG" "$PREFIX/pkgs-cache"; LIST="$PKG/explicit.txt"; echo "@EXPLICIT" > "$LIST"
+  while read -r line; do
+    url="${line%%#*}"; sum="${line##*#}"; f="$PKG/$(basename "$url")"
+    if ! { [ -s "$f" ] && [ "$(md5sum < "$f" | cut -d' ' -f1)" = "$sum" ]; }; then
+      echo "  download $(basename "$url")"
+      curl -fL --retry 5 -C - -o "$f.part" "$url"
+      mv "$f.part" "$f"
+      [ "$(md5sum < "$f" | cut -d' ' -f1)" = "$sum" ] || { echo "  checksum mismatch, removed: $f (run again)"; rm -f "$f"; exit 1; }
+    fi
+    echo "file://$f#$sum" >> "$LIST"
+  done < <(grep '^https://' "$REPO/tools/lock/llm-cpu-conda-py311.txt")
+  [ ! -f "$PREFIX/condarc" ] || export CONDARC="$PREFIX/condarc"
+  CONDA_PKGS_DIRS="$PREFIX/pkgs-cache" "$CONDA" install -y -q -p "$ENVP" --offline --file "$LIST"
+  rm -rf "$PKG"
+elif [ "$PYV" = 3.11-x86_64 ]; then
   # the tested wheel set (tools/lock/llm-cpu-py311.txt): curl downloads it (it trusts the system's certificates, like
   # git), pip installs offline -- pip never connects, so a network that re-signs HTTPS cannot break it
   WH="$PREFIX/wheels-llm"; mkdir -p "$WH"
@@ -82,7 +114,7 @@ say "checksums"
 rm -rf "$TMPDIR"
 
 say "self-test: load the model with the default adapter and score two prompts on the CPU"
-LLM_DEVICE=cpu "$PY" "$REPO/flow/lib/scorer.py" --selftest
+LLM_DEVICE=cpu LLM_BASE_MODEL="$MODEL" "$PY" "$REPO/flow/lib/scorer.py" --selftest
 echo
 echo "done. In each new terminal: source $PREFIX/env.csh (bash: env.sh), then"
 echo "  python3 flow/run.py A.def B.lef C.lef --policy llm"

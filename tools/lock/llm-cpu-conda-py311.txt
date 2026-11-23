@@ -1,0 +1,53 @@
+# LLM on a CPU, conda-forge (conda.anaconda.org): the packages added to the flow Python (env-python from
+# tools/install_openroad_conda.sh, CPython 3.11): pytorch 2.7.1 (CPU build), transformers 4.57.3, peft 0.18.1,
+# accelerate, safetensors and their runtime dependencies, and the OpenMP build of OpenBLAS (with the pthreads
+# build env-python has, the CPU build of PyTorch runs about 10x slower: OpenBLAS inside OpenMP loops).
+# tools/install_llm_cpu.sh downloads them with curl
+# (md5 checked) and conda installs them offline. Made from a solve of those specs on that env.
+https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-8_kmp_llvm.conda#b4d1b93dd1dab4eea23395fd5e5b357d
+https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_3.conda#3845f3d75991bae0fb90884662f4327c
+https://conda.anaconda.org/conda-forge/noarch/accelerate-1.16.0-pyh5ded981_0.conda#b7c0a79cb929122064094c31a68764ba
+https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.11.20-hbd8a1cb_0.conda#05f63e1cbcb57e737619f989a2b8c8b3
+https://conda.anaconda.org/conda-forge/noarch/certifi-2026.11.20-pyhd8ed1ab_0.conda#b2f5cabdd5426f1f88a3efe00cde8909
+https://conda.anaconda.org/conda-forge/linux-64/charset-normalizer-3.5.2-h1114479_0.conda#78d5c6112c9320a1a797935cecfec7c2
+https://conda.anaconda.org/conda-forge/noarch/cpython-3.11.18-py311hd8ed1ab_0.conda#d85bc1f0651fab6fb5f288b14731f954
+https://conda.anaconda.org/conda-forge/noarch/filelock-4.3.0-pyh5ded981_0.conda#c7eee800b9daac6505dda487e310f00d
+https://conda.anaconda.org/conda-forge/noarch/fsspec-2026.6.0-pyhd8ed1ab_0.conda#7d7e6c826ba0743fc491ebee0e7b899c
+https://conda.anaconda.org/conda-forge/linux-64/gmp-6.3.0-hfd2156b_3.conda#576e32739f323438bf69ab006c21be7b
+https://conda.anaconda.org/conda-forge/linux-64/gmpy2-2.3.2-py311hbc40be8_2.conda#d0048d066dd588ec0dbd6980b9082b58
+https://conda.anaconda.org/conda-forge/linux-64/hf-xet-1.8.0-py311h30674b1_1.conda#68121da92ffa0df42f821ca82e27a49d
+https://conda.anaconda.org/conda-forge/noarch/huggingface_hub-0.36.0-pyhd8ed1ab_0.conda#39e591c87bc60fcf0944f5b878ed3e27
+https://conda.anaconda.org/conda-forge/noarch/idna-3.20-pyh5ded981_0.conda#ee73be987f9de9ea5c2fdaeefa7b6491
+https://conda.anaconda.org/conda-forge/noarch/jinja2-3.1.6-pyhcf101f3_1.conda#04558c96691bed63104678757beb4f8d
+https://conda.anaconda.org/conda-forge/linux-64/libabseil-20250512.1-cxx17_hba17884_0.conda#83b160d4da3e1e847bf044997621ed63
+https://conda.anaconda.org/conda-forge/linux-64/libopenblas-0.3.34-openmp_h156ec52_2.conda#85d0ace74af50f6eea7010679eacb59a
+https://conda.anaconda.org/conda-forge/linux-64/libprotobuf-6.31.1-hfb7daa7_5.conda#da31d891434e50d7e7be8adc5832269b
+https://conda.anaconda.org/conda-forge/linux-64/libtorch-2.7.1-cpu_generic_h1322af4_3.conda#214c9cd1101a6671c1884b30ba7b2283
+https://conda.anaconda.org/conda-forge/linux-64/libuv-1.52.1-h280c20c_1.conda#01c4ed87826af55996768af6dbc936b4
+https://conda.anaconda.org/conda-forge/linux-64/llvm-openmp-23.1.6-h7148c6a_0.conda#877df5737d112b7e276884b5f333a925
+https://conda.anaconda.org/conda-forge/linux-64/markupsafe-3.0.4-py311h364832d_5.conda#ff53edffc3dd64beced42d9acd6c7334
+https://conda.anaconda.org/conda-forge/linux-64/mpc-1.4.1-ha2cb11d_0.conda#8ca4b2b9325e2d22aaf7639aaa5369a1
+https://conda.anaconda.org/conda-forge/linux-64/mpfr-4.2.2-ha2cb11d_1.conda#7dcc10f6c0bc3596d5519a710a84dfd4
+https://conda.anaconda.org/conda-forge/noarch/mpmath-1.4.1-pyhd8ed1ab_0.conda#2e81b32b805f406d23ba61938a184081
+https://conda.anaconda.org/conda-forge/noarch/networkx-3.6.1-pyhcf101f3_0.conda#a2c1eeadae7a309daed9d62c96012a2b
+https://conda.anaconda.org/conda-forge/noarch/nomkl-1.0-h5ca1d4c_0.tar.bz2#9a66894dfd07c4510beb6b3f9672ccc0
+https://conda.anaconda.org/conda-forge/linux-64/optree-0.20.0-py311h5f908af_3.conda#62919a069f158f3e48b5ab6aeee15987
+https://conda.anaconda.org/conda-forge/noarch/peft-0.18.1-pyhcf101f3_0.conda#445016a9b0fb849ef796f2dc907a6c6a
+https://conda.anaconda.org/conda-forge/linux-64/psutil-7.2.2-py311h194be0f_4.conda#aed43b9d79ba274056f6a064ad319582
+https://conda.anaconda.org/conda-forge/noarch/pybind11-3.1.0-pyh293190f_0.conda#5aa0ad32112cbfc1cf0f2b3c600be4a5
+https://conda.anaconda.org/conda-forge/noarch/pybind11-global-3.1.0-pyh648e204_0.conda#534548c7e6102ae9a408957380937b52
+https://conda.anaconda.org/conda-forge/noarch/python-gil-3.11.18-hd8ed1ab_0.conda#d0500cde201e09916c37a251ffe22d4c
+https://conda.anaconda.org/conda-forge/linux-64/pytorch-2.7.1-cpu_generic_py311_h7108385_3.conda#248b8f1bcb6214ff4716713ab0600d4f
+https://conda.anaconda.org/conda-forge/linux-64/pyyaml-6.0.3-py311h364832d_4.conda#2dd2a16d5e2ed281ca558ec4c6cae321
+https://conda.anaconda.org/conda-forge/linux-64/regex-2026.11.19-py311h0d48ccd_0.conda#0134fea2014e20916aa7c89a9ddfab4f
+https://conda.anaconda.org/conda-forge/noarch/requests-2.34.2-pyhcf101f3_0.conda#4a85203c1d80c1059086ae860836ffb9
+https://conda.anaconda.org/conda-forge/linux-64/safetensors-0.8.0-py311ha6e1976_3.conda#038caa21339e84aa47fc768ccb645be0
+https://conda.anaconda.org/conda-forge/linux-64/sleef-3.9.0-ha0421bc_0.conda#e8a0b4f5e82ecacffaa5e805020473cb
+https://conda.anaconda.org/conda-forge/noarch/sympy-1.14.0-pyh2585a3b_106.conda#32d866e43b25275f61566b9391ccb7b5
+https://conda.anaconda.org/conda-forge/linux-64/tokenizers-0.22.2-py311ha21528d_0.conda#d732f4fb6e6deddfa98106af4e26110e
+https://conda.anaconda.org/conda-forge/noarch/tqdm-4.70.1-pyhfa0c392_0.conda#ffc91f29264eeb8d3ba96fdc897316c3
+https://conda.anaconda.org/conda-forge/noarch/transformers-4.57.3-pyhd8ed1ab_0.conda#a22822526af0db04ece774afa488781f
+https://conda.anaconda.org/conda-forge/noarch/typing-extensions-4.16.0-h69aa097_0.conda#c680b5747e8c4c8f23dca0bb7042a8fc
+https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.16.0-pyhcf101f3_0.conda#c70ad746c22219b9700931707482992c
+https://conda.anaconda.org/conda-forge/noarch/urllib3-2.8.0-pyh5ded981_1.conda#8ce0b6bfc873bf2c25b083dd5ee29489
+https://conda.anaconda.org/conda-forge/linux-64/yaml-0.2.5-hebe6cf0_3.conda#e741576fb8f89821ac7c1c537322a33d
