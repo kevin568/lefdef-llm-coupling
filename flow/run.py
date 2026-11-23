@@ -425,7 +425,7 @@ def s2_candidates(case, out, st):
         pins = [p['xy'] for p in geo['nets'][n]['pins']]
         pb = G.grt_pin_boxes(pdirs[n] / 'grt.guide', n, geo, minlev)
         cands.append(dict(candidate_id=f'{n}:default', net=n, kind='default', route_dir=str(pdirs[n])))
-        for cd in K.pool_for_net(n, pins):
+        for cd in K.pool_for_net(n, pins, ARGS.trees):
             g = cd['imported']['geometry']
             win = G.window_nets(pmn, [[min(s[0], s[2]), min(s[1], s[3]), max(s[0], s[2]), max(s[1], s[3])] for s in g]
                                 + [r for _, _, r in pmn.get(n, [])], margin)
@@ -678,6 +678,28 @@ def check_obs(case, out, which):
     return 0
 
 
+RELAX_LEVELS = ['none', 'abstract', 'spacing', 'all']
+
+
+def viol_kind(v):
+    """'Short|MetSpc' + ' vs ' + what it hits (net, special, pin, obs, iopin, blockage; net when the report says
+    nothing, e.g. OpenROAD's own)"""
+    m = re.search(r'obstacle:(net|special|pin|obs|iopin|blockage):', v[1] or '')
+    return f'{v[0] or "?"} vs {m.group(1) if m else "net"}'
+
+
+def relaxed(kind, level):
+    """is a new violation of this kind tolerated at this --drc-relax level? abstract: clashes with other cells' LEF
+    pins / OBS (abstracts that may not match the layout); spacing: also every spacing (MetSpc) violation; all: every
+    violation (only connected and no other net changed then count)"""
+    typ, what = kind.split(' vs ')
+    if level == 'all':
+        return True
+    if level in ('abstract', 'spacing') and what in ('pin', 'obs'):
+        return True
+    return level == 'spacing' and typ == 'MetSpc'
+
+
 def s5_extract(case, out, st):
     b = out / 's1_import'
     base = json.loads((b / 'baseline.json').read_text()); base_sp = spef.read(b / 'base.spef'); ref = def_nets(b / 'base.def')
@@ -701,14 +723,20 @@ def s5_extract(case, out, st):
         m.update(target_routed=geo['nets'][n]['routed'], new_violations=len(new_viol), known_violations=len(viol) - len(new_viol),
                  other_nets_changed=len(changed), net_cc_before_fF=base_sp['per_net_cc'].get(n, 0.), net_cc_after_fF=sp['per_net_cc'].get(n, 0.),
                  design_dcc_fF=sp['total_cc'] - base['cc_fF'])
-        m['valid'] = bool(m['target_routed'] and not new_viol and not changed)
+        # validity at each --drc-relax level (all four kept; 'valid' is the chosen one)
+        kinds = [viol_kind(v) for v in new_viol]
+        m['new_violation_kinds'] = {k: kinds.count(k) for k in sorted(set(kinds))}
+        ok = bool(m['target_routed'] and not changed)
+        m['valid_by_level'] = {lv: bool(ok and not [k for k in kinds if not relaxed(k, lv)]) for lv in RELAX_LEVELS}
+        m['valid'] = m['valid_by_level'][ARGS.drc_relax]
         m['U'] = C.utility(m, base)
         (rd / 'metrics.json').write_text(json.dumps(m, indent=1))
         return m
     with ThreadPoolExecutor(ARGS.jobs) as ex:
         rows = list(ex.map(one, R))
     (st.dir / 'measurements.json').write_text(json.dumps(dict(baseline=base, rows=rows), indent=1))
-    st.info.update(measured=len(rows), valid=sum(bool(r.get('valid')) for r in rows))
+    st.info.update(measured=len(rows), valid=sum(bool(r.get('valid')) for r in rows), drc_relax=ARGS.drc_relax)
+    st.info['valid_by_level'] = {lv: sum(1 for r in rows if (r.get('valid_by_level') or {}).get(lv)) for lv in RELAX_LEVELS}
 
 
 def s6_apply(case, out, st):
@@ -748,13 +776,15 @@ def s6_apply(case, out, st):
         except C.StageError as e:
             rec.update(accepted=False, reason=str(e).splitlines()[0]); steps.append(rec); continue
         geo = json.loads((sd / 'geo.json').read_text()); sp = spef.read(sd / 'out.spef'); m = design_metrics(geo, sp)
-        new_viol = [v for v in G.violations(sd / 'drc.rpt') if v not in known]
+        all_new = [v for v in G.violations(sd / 'drc.rpt') if v not in known]
+        new_viol = [v for v in all_new if not relaxed(viol_kind(v), ARGS.drc_relax)]
+        tol = [viol_kind(v) for v in all_new if relaxed(viol_kind(v), ARGS.drc_relax)]
         new_nets = def_nets(sd / 'out.def')
         changed = sorted(x for x in cur_nets if x != n and cur_nets[x] != new_nets.get(x))
         step_u = C.utility(m, cur_m)
         why = [w for w, bad in [('target not routed', not geo['nets'][n]['routed']), (f'{len(new_viol)} new DRC violation(s)', new_viol),
                                 (f'{len(changed)} other net(s) changed', changed), (f'no further gain (step U {step_u:+.4f})', step_u <= 0)] if bad]
-        rec.update(accepted=not why, reason=', '.join(why), step_U=step_u, **m)
+        rec.update(accepted=not why, reason=', '.join(why), step_U=step_u, tolerated_violations={k: tol.count(k) for k in set(tol)}, **m)
         if not why:
             cur_def, cur_spef, cur_m, cur_sp, cur_nets = sd / 'out.def', sd / 'out.spef', m, sp, new_nets
         steps.append(rec)
@@ -765,11 +795,12 @@ def s6_apply(case, out, st):
     rel = lambda a, z: 100. * (a - z) / z if z else 0.
     summ = dict(policy=ARGS.policy, key_metrics=key_metrics(case, out, nets, cur_sp), baseline={k: base[k] for k in ('cc_fF', 'wl_um', 'vias')}, final=cur_m, U=C.utility(cur_m, base),
                 cc_change_pct=rel(cur_m['cc_fF'], base['cc_fF']), wl_change_pct=rel(cur_m['wl_um'], base['wl_um']),
-                via_change=cur_m['vias'] - base['vias'], tried=len(queue), accepted=len(acc), nets=nets,
+                via_change=cur_m['vias'] - base['vias'], tried=len(queue), accepted=len(acc), nets=nets, drc_relax=ARGS.drc_relax,
+                tolerated_violations=sum(sum(s.get('tolerated_violations', {}).values()) for s in acc),
                 final_def=str(d / 'final.def'), final_spef=str(d / 'final.spef'), steps=steps)
     (d / 'apply.json').write_text(json.dumps(summ, indent=1))
     st.info.update(tried=len(queue), accepted=len(acc), cc_before_fF=round(base['cc_fF'], 3), cc_after_fF=round(cur_m['cc_fF'], 3),
-                   cc_change_pct=round(summ['cc_change_pct'], 2))
+                   cc_change_pct=round(summ['cc_change_pct'], 2), drc_relax=ARGS.drc_relax, tolerated_violations=summ['tolerated_violations'])
 
 
 def key_metrics(case, out, nets, final_sp=None):
@@ -970,8 +1001,9 @@ def default_policy():
     if not ok and install_llm(why):
         ok, dev, why = available()
     if ok:
-        print(f'LLM available ({why}): using --policy hybrid (LLM + heuristic; --policy llm for the LLM alone)')
-        return 'hybrid'
+        print(f'LLM available ({why}): using --policy llm (the final layout takes the LLM choice; the other rankers '
+              'are compared on the same candidates)')
+        return 'llm'
     print(f'LLM not available: {why}\n  using --policy heuristic (geometric ranking)')
     return 'heuristic'
 
@@ -1014,7 +1046,18 @@ def main():
                          'once without the DEF BLOCKAGES, and say whether the OBS is what blocks them (out/<case>/check_obs/)')
     ap.add_argument('--no-llm-install', dest='llm_install', action='store_false',
                     help='do not install the CPU LLM when it is missing (default: install it into local-tools/ and use it)')
-    ap.add_argument('--route', default='best', choices=['best', 'all'], help='best: policy top-1 per net; all: every candidate')
+    ap.add_argument('--route', default='all', choices=['best', 'all'],
+                    help='all (default): reroute and measure every candidate tree, the final layout takes the policy\'s best '
+                         'valid tree per net; best: only each ranker\'s top tree per net (faster, fewer options)')
+    ap.add_argument('--trees', type=int, default=6, metavar='N',
+                    help='extra candidate trees per net besides the fixed 18 recipes: N Z-shaped trees and N/2 detours '
+                         '(default 6; 0 = the fixed recipes only)')
+    ap.add_argument('--drc-relax', default='abstract', choices=RELAX_LEVELS,
+                    help='which new DRC violations a candidate may have and still count as valid: none (any makes it invalid); '
+                         'abstract (default: clashes with other cells\' LEF pins / OBS are tolerated, as the abstracts may '
+                         'not match the layout; clashes with other nets, power or I/O pins are not); spacing (also every '
+                         'spacing violation; shorts with other nets still not); all (every violation). Tolerated ones are '
+                         'counted in the report')
     ap.add_argument('--from', dest='start', choices=STAGES, help='re-run from this stage')
     ap.add_argument('--only', choices=STAGES, help='run a single stage')
     ap.add_argument('--out', default=None, help='output dir (default out/<DEF name or case>)')
@@ -1068,9 +1111,13 @@ def main():
     if ARGS.check_obs:
         sys.exit(check_obs(case, out, ARGS.check_obs))
     # ranking settings: finished s3+ stages are reused only for the same policy / adapter / compare / route
-    sel = dict(policy=ARGS.policy, adapter=ARGS.adapter, compare=ARGS.compare, route=ARGS.route)
+    sel = dict(policy=ARGS.policy, adapter=ARGS.adapter, compare=ARGS.compare, route=ARGS.route, trees=ARGS.trees,
+               drc_relax=ARGS.drc_relax)
     self_f = out / 'selection.json'; old_sel = json.loads(self_f.read_text()) if self_f.exists() else None
-    if not ARGS.start and not ARGS.only and C.stage_ok(out, 's3_score') and old_sel != sel:
+    if not ARGS.start and not ARGS.only and C.stage_ok(out, 's2_candidates') and old_sel is not None and old_sel.get('trees') != ARGS.trees:
+        ARGS.start = 's2_candidates'
+        print(f'candidate trees per net changed ({old_sel.get("trees")} -> {ARGS.trees}): re-running from s2_candidates')
+    elif not ARGS.start and not ARGS.only and C.stage_ok(out, 's3_score') and old_sel != sel:
         sc_rows = json.loads((out / 's3_score/scores.json').read_text())['rows']
         need_llm = uses_llm() and (not sc_rows or 'llm' not in sc_rows[0] or (old_sel or {}).get('adapter') != ARGS.adapter)
         ARGS.start = 's3_score' if need_llm else 's4_route'
@@ -1163,8 +1210,12 @@ def explain(out, case):
     if m5.exists():
         rows = json.loads(m5.read_text())['rows']
         known = set(known_violations(case, out))
-        L.append(f'\n=== why: candidates ({len(rows)} measured, {sum(1 for r in rows if r.get("valid"))} valid; '
-                 'valid = connected, no new DRC, no other net changed); per net: ===')
+        lv = {k: sum(1 for r in rows if (r.get('valid_by_level') or {}).get(k)) for k in RELAX_LEVELS}
+        L.append(f'\n=== why: candidates ({len(rows)} measured, {sum(1 for r in rows if r.get("valid"))} valid at --drc-relax '
+                 f'{ARGS.drc_relax}; valid = connected, no other net changed, no new DRC that the level does not tolerate) ===')
+        L.append('  valid at each level: ' + ', '.join(f'{k} {lv[k]}' for k in RELAX_LEVELS)
+                 + '  (abstract: clashes with other cells\' LEF pins / OBS tolerated; spacing: also MetSpc; all: any DRC)')
+        L.append('  per net:')
         full = []; per = {}
         for r in rows:
             kinds = []
@@ -1178,7 +1229,7 @@ def explain(out, case):
                     new = [v for v in G.violations(Path(r['dir']) / 'drc.rpt') if v not in known]
                     first = (new[0][0] + ' ' + new[0][1])[:70] if new else ''
                     parts.append(f'{r["new_violations"]} new DRC (first: {first})')
-                    kinds += ['DRC ' + (v[0] or '?') for v in new] or ['DRC']
+                    kinds += ['DRC ' + viol_kind(v) for v in new] or ['DRC']
                 if r.get('other_nets_changed'):
                     parts.append(f'changes {r["other_nets_changed"]} other net(s)'); kinds.append('other net changed')
                 reason = '; '.join(parts) or 'ok'
@@ -1186,16 +1237,19 @@ def explain(out, case):
             tree = str(r.get('candidate_id', '')).split(':')[-1]
             cb, ca = r.get('net_cc_before_fF', 0.) or 0., r.get('net_cc_after_fF', 0.) or 0.
             full.append(f'  {ok} {r["net"][:24]:<24} {tree:<10} {cb:8.2f} -> {ca:8.2f}  {reason}')
-            p = per.setdefault(r['net'], dict(n=0, v=0, cb=cb, best=None, why={}))
+            p = per.setdefault(r['net'], dict(n=0, v=0, cb=cb, best=None, why={}, tol={}))
             p['n'] += 1
             if r.get('valid'):
                 p['v'] += 1; p['best'] = ca if p['best'] is None else min(p['best'], ca)
-            for k in kinds:
-                p['why'][k] = p['why'].get(k, 0) + 1
+            for k in kinds:   # a valid candidate's DRC is tolerated by --drc-relax; an invalid one's is why it is out
+                d_ = p['tol'] if r.get('valid') else p['why']
+                d_[k] = d_.get(k, 0) + 1
         for n, p in sorted(per.items(), key=lambda kv: -kv[1]['cb']):
             best = f'best {p["best"]:.2f}' if p['best'] is not None else 'none valid'
             whys = ', '.join(f'{k} x{c}' for k, c in sorted(p['why'].items(), key=lambda kv: -kv[1]))
-            L.append(f'  {n[:24]:<24} {p["cb"]:8.2f}  valid {p["v"]}/{p["n"]} ({best})' + (f'  invalid: {whys}' if whys else ''))
+            tols = ', '.join(f'{k} x{c}' for k, c in sorted(p['tol'].items(), key=lambda kv: -kv[1]))
+            L.append(f'  {n[:24]:<24} {p["cb"]:8.2f}  valid {p["v"]}/{p["n"]} ({best})' + (f'  invalid: {whys}' if whys else '')
+                     + (f'  tolerated: {tols}' if tols else ''))
         L.append(f'  every candidate: {out / "why.txt"}')
     txt = '\n'.join(L)
     if txt:

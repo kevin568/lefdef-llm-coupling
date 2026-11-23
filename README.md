@@ -117,8 +117,14 @@ What is decided for you (each can be overridden):
 - **Reuse**: finished stages are reused, except those made by older flow code: after a `git pull` that changes the
   router, candidates, scorer or extraction code, the run starts again from the first stage that code affects
   (`out/<case>/code.json`).
-- **Policy** (`--policy`): `hybrid` when the LLM can run (CUDA GPU, or CPU after `tools/install_llm_cpu.sh`):
-  per net, the z-scored LLM score plus the z-scored heuristic. Otherwise the geometric heuristic. `llm`: the LLM alone.
+- **Candidates and validity**: besides the 18 fixed tree recipes per net, `--trees N` (default 6) adds N Z-shaped trees
+  and N/2 detours; `--route all` (default) reroutes and measures every tree, and the final layout takes the policy's
+  best valid tree per net (`--route best`: only each ranker's top tree, faster). A candidate is valid when it connects,
+  changes no other net and has no new DRC violation that `--drc-relax` does not tolerate: `none`, `abstract` (default:
+  clashes with other cells' LEF pins / OBS, which may not match the layout), `spacing` (also every MetSpc), `all`. The
+  run ends with the valid count at every level, and the tolerated violations are counted in `s6_apply/apply.json`.
+- **Policy** (`--policy`): `llm` when the LLM can run (CUDA GPU, or CPU after `tools/install_llm_cpu.sh`);
+  otherwise the geometric heuristic. `hybrid`: per net, the z-scored LLM score plus the z-scored heuristic.
 - **Ranker comparison** (`--compare`, on by default with the LLM): the top tree per net of every ranker (LLM, hybrid,
   heuristic, random) is rerouted and measured alone, and the report and terminal end with a table: per ranker, valid
   picks, picks that improve U, and the coupling of the nets before → after. `s6_apply` still combines only the

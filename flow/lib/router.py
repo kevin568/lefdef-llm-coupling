@@ -899,21 +899,25 @@ def def_wiring(pieces):
 
 
 def self_check(shapes, obstacles, tech, dbu, net):
-    """spacing / short check of the new shapes against everything else -> DRT-style report lines"""
+    """spacing / short check of the new shapes against everything else -> DRT-style report lines. obstacles:
+    [(layer, rect)] or labeled [(layer, rect, owner, kind, ...)]; the kind (net, special, pin, obs, iopin, blockage)
+    goes into the srcs line (obstacle:<kind>:...) so the flow can tell a clash with another net from one with a cell's
+    LEF abstract"""
     out = []
     by = {}
-    for l, r in obstacles:
-        by.setdefault(l, []).append(r)
+    for it in obstacles:
+        by.setdefault(it[0], []).append((it[1], it[3] if len(it) > 3 else 'net', it[2] if len(it) > 2 else ''))
     for l, r in shapes:
         R = tech.routing.get(l)
         if not R:
             continue
         sp = int(round(R['spacing'] * dbu))
-        for o in by.get(l, []):
+        for o, kd, who in by.get(l, []):
             if r[0] < o[2] + sp and o[0] < r[2] + sp and r[1] < o[3] + sp and o[1] < r[3] + sp:
                 kind = 'Short' if (r[0] < o[2] and o[0] < r[2] and r[1] < o[3] and o[1] < r[3]) else 'MetSpc'
-                out.append(f'  violation type: {kind}\n    srcs: net:{net} obstacle:{o}\n    bbox = ( {r[0] / dbu} , {r[1] / dbu} ) - '
-                           f'( {r[2] / dbu} , {r[3] / dbu} ) on Layer {l}')
+                who = who.replace(' ', '_')
+                out.append(f'  violation type: {kind}\n    srcs: net:{net} obstacle:{kd}:{who}:{o}\n    bbox = ( {r[0] / dbu} , '
+                           f'{r[1] / dbu} ) - ( {r[2] / dbu} , {r[3] / dbu} ) on Layer {l}')
                 break
     return out
 
@@ -1366,7 +1370,8 @@ def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None
                         f'({len(hit)} OBS / blockage shape(s)); the new wiring overlaps them at {ov} place(s) and is within spacing of them '
                         f'at {sp_}' + (f' ({", ".join(list(who)[:6])})' if who else ''))
             logl += [f'RELAX   attempt {k + 1} (ignoring {", ".join(d) or "nothing"}) failed: {why}' for k, (d, why) in enumerate(tried)]
-        viol += self_check(shapes, D.obstacles(name), T, D.dbu, name)
+        viol += self_check(shapes, [it for it in D.obstacle_items(name) if not (D.drop and D.drop_match(it, name))],
+                           T, D.dbu, name)
         s, e = D.nets[name]['span']
         st = text[s:e]
         head = st.split('+')[0].rstrip().rstrip(';').rstrip()

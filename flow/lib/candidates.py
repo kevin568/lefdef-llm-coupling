@@ -72,7 +72,29 @@ def hanan(points, rng):
     return merge([[*coords[a], *coords[b]] for a in range(len(coords)) for b in adj[a] if a < b])
 
 
-def pool_for_net(net, pins):
+def zshape(p, q, hfirst, f):
+    """p -> q with one jog at fraction f of the way (horizontal first: along x to the jog, then y, then x)"""
+    if hfirst:
+        xm = int(round(p[0] + f * (q[0] - p[0])))
+        return [s for s in ([p[0], p[1], xm, p[1]], [xm, p[1], xm, q[1]], [xm, q[1], q[0], q[1]]) if s[:2] != s[2:]]
+    ym = int(round(p[1] + f * (q[1] - p[1])))
+    return [s for s in ([p[0], p[1], p[0], ym], [p[0], ym, q[0], ym], [q[0], ym, q[0], q[1]]) if s[:2] != s[2:]]
+
+
+def ushape(p, q, hfirst, d):
+    """p -> q with the trunk moved sideways by d (a detour away from what runs next to the direct path)"""
+    if hfirst:
+        y = min(p[1], q[1]) + d if d < 0 else max(p[1], q[1]) + d
+        return [s for s in ([p[0], p[1], p[0], y], [p[0], y, q[0], y], [q[0], y, q[0], q[1]]) if s[:2] != s[2:]]
+    x = min(p[0], q[0]) + d if d < 0 else max(p[0], q[0]) + d
+    return [s for s in ([p[0], p[1], x, p[1]], [x, p[1], x, q[1]], [x, q[1], q[0], q[1]]) if s[:2] != s[2:]]
+
+
+def pool_for_net(net, pins, extra=0):
+    """candidate trees of a net: x_first / y_first combs, 8 MST and 8 Hanan variants (fixed recipe), and with
+    extra > 0 that many Z-shaped trees (each MST edge jogs at a random point) and extra // 2 detour trees (the
+    trunk of each MST edge moved sideways by 10-40 % of the net's extent), from a separate seed so the first ones
+    stay the same"""
     pins = sorted(set(tuple(p) for p in pins))
     # the 'WU119:' prefix is part of the seed recipe; changing it changes every candidate set
     seed = int(hashlib.sha256(f'WU119:{net}'.encode()).hexdigest()[:8], 16); rng = np.random.default_rng(seed)
@@ -83,6 +105,16 @@ def pool_for_net(net, pins):
         opts.append((f'mst{t}', merge([s for k, (a, b) in enumerate(edges) for s in lshape(pins[a], pins[b], dirs[k])])))
     for t in range(8):
         opts.append((f'hanan{t}', hanan(pins, rng)))
+    if extra > 0 and len(pins) >= 2:
+        r2 = np.random.default_rng(int(hashlib.sha256(f'WU119x:{net}'.encode()).hexdigest()[:8], 16))
+        span = max(max(p[0] for p in pins) - min(p[0] for p in pins), max(p[1] for p in pins) - min(p[1] for p in pins), 1)
+        for t in range(extra):
+            dirs = r2.integers(0, 2, len(edges)).astype(bool); fr = r2.uniform(.2, .8, len(edges))
+            opts.append((f'z{t}', merge([s for k, (a, b) in enumerate(edges) for s in zshape(pins[a], pins[b], dirs[k], fr[k])])))
+        for t in range(extra // 2):
+            dirs = r2.integers(0, 2, len(edges)).astype(bool)
+            ds = (r2.uniform(.1, .4, len(edges)) * span * r2.choice([-1, 1], len(edges))).astype(int)
+            opts.append((f'detour{t}', merge([s for k, (a, b) in enumerate(edges) for s in ushape(pins[a], pins[b], dirs[k], int(ds[k]))])))
     seen = set(); out = []
     for kind, g in opts:
         key = tuple(map(tuple, g))
