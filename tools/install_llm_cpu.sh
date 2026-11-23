@@ -9,8 +9,10 @@
 #   python3 flow/run.py A.def B.lef C.lef --policy llm
 #
 # Needs about 3.5 GB free in FOLDER (model 2.1 GB, Python packages about 1.2 GB); about 13 GB of RAM while scoring.
-# Nothing is written outside FOLDER. Running again resumes interrupted downloads. Downloads with pip (PyPI and
-# download.pytorch.org) and curl (huggingface.co, or $HF_ENDPOINT for a mirror). Offline machine: put the wheels in a
+# Nothing is written outside FOLDER. Running again resumes interrupted downloads. Everything is downloaded with curl
+# (the system's HTTPS certificates, like git): the pinned wheels in tools/lock/llm-cpu-py311.txt (for the flow's
+# Python 3.11 from tools/install_openroad_conda.sh; pip then installs offline) and the model from huggingface.co (or
+# $HF_ENDPOINT for a mirror). Another Python version: pip downloads (PyPI, download.pytorch.org). Offline machine: put the wheels in a
 # folder and set WHEELS=folder; copy the model files (list below) into FOLDER/models/Qwen2.5-3B-Instruct-bnb-4bit/.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -44,6 +46,22 @@ if "$PY" -c "import torch, transformers, peft, safetensors" > /dev/null 2>&1; th
   echo "  already installed"
 elif [ -n "${WHEELS:-}" ]; then
   "$PY" -m pip install --no-index --find-links "$WHEELS" torch transformers peft safetensors accelerate
+elif [ "$("$PY" -c 'import sys, platform; print("%d.%d-%s" % (sys.version_info[:2] + (platform.machine(),)))')" = 3.11-x86_64 ]; then
+  # the tested wheel set (tools/lock/llm-cpu-py311.txt): curl downloads it (it trusts the system's certificates, like
+  # git), pip installs offline -- pip never connects, so a network that re-signs HTTPS cannot break it
+  WH="$PREFIX/wheels-llm"; mkdir -p "$WH"
+  grep '^https://' "$REPO/tools/lock/llm-cpu-py311.txt" | while read -r line; do
+    url="${line%%#*}"; sum="${line##*sha256=}"; f="$WH/$(basename "$url" | sed 's/%2B/+/g')"
+    if [ -s "$f" ] && echo "$sum  $f" | sha256sum -c --quiet - > /dev/null 2>&1; then
+      continue
+    fi
+    echo "  download $(basename "$f")"
+    curl -fL --retry 5 -C - -o "$f.part" "$url"
+    mv "$f.part" "$f"
+    echo "$sum  $f" | sha256sum -c --quiet - || { echo "  checksum mismatch, removed: $f (run again)"; rm -f "$f"; exit 1; }
+  done
+  "$PY" -m pip install --no-index --find-links "$WH" "torch==2.7.1+cpu" "transformers==4.57.3" "peft==0.18.1" safetensors accelerate
+  rm -rf "$WH"
 else
   # torch from the CPU index (+cpu exists only there), its dependencies from PyPI
   "$PY" -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch==2.7.1+cpu"
