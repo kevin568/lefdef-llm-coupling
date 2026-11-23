@@ -146,12 +146,15 @@ class Tech(object):
         return out
 
     def via_for(self, lo, hi):
-        """a fixed via joining routing layers lo and hi (adjacent in the stack), preferring the flow's generated ones"""
+        """a fixed via joining routing layers lo and hi (adjacent in the stack): the flow's ones made from a VIARULE
+        first, then the LEF's (and the design's DEF vias the router adds), last the ones made from the cut layer
+        alone (<cut>_SYN, flow/lib/preflight.py)"""
+        rank = lambda n: 0 if n.endswith('_FLOW') else 2 if n.endswith('_SYN') else 1
         best = None
         for name, sh in self.vias.items():
             ls = {l for l, _ in sh}
             if lo in ls and hi in ls and not (ls - {lo, hi} - {l for l in ls if self.types.get(l) == 'CUT'}):
-                if best is None or name.endswith('_FLOW'):
+                if best is None or rank(name) < rank(best):
                     best = name
         return best
 
@@ -496,7 +499,8 @@ class Router(object):
         stack = ([self.below] if self.below else []) + list(layers)
         use = None
         for lo, hi in zip(stack, stack[1:]):
-            if tech.via_for(lo, hi):
+            v = tech.via_for(lo, hi)
+            if v and not v.endswith('_SYN'):   # a real LEF via; one made from the cut layer alone comes after DEF vias
                 continue
             cands = [n for n, sh in design.vias.items() if sh and lo in {l for l, _ in sh} and hi in {l for l, _ in sh}
                      and not ({l for l, _ in sh} - {lo, hi} - {l for l, _ in sh if tech.types.get(l) == 'CUT'})]
@@ -1272,6 +1276,11 @@ def run(lefs, def_in, def_out, nets, layers, guide_file=None, log=None, drc=None
     for (lo, hi), (vn, k) in R.def_vias.items():
         logl.append(f'FLOW the LEF has no fixed via between {lo} and {hi}: using the DEF via {vn} '
                     f'(used {k} time(s) by the original signal wiring)')
+    stk = ([R.below] if R.below else []) + list(sig)
+    synv = [f'{a}-{b} ({T.via_for(a, b)})' for a, b in zip(stk, stk[1:]) if (T.via_for(a, b) or '').endswith('_SYN')]
+    if synv:
+        logl.append(f'FLOW no via in the LEF or the DEF between {", ".join(synv)}: using the via made from the cut layer '
+                    'WIDTH / ENCLOSURE')
     nov = [f'{sig[k]}-{sig[k + 1]}' for k in sorted(R.novia)]
     if nov:
         logl.append(f'FLOW no via at all between {", ".join(nov)} (neither a LEF VIA / VIARULE nor a DEF via): '

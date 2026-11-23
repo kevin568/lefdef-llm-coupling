@@ -351,10 +351,51 @@ def add_default_vias(lefs):
             lines.append(f'    RECT {x1 - ex:g} {y1 - ey:g} {x2 + ex:g} {y2 + ey:g} ;')
         lines.append(f'END {b.group(2)}_FLOW\n')
         new.append('\n'.join(lines)); made.append(f'{b.group(2)}({cut[0]})'); fixed_cuts.add(cut[0])
+    # a cut layer between two routing layers with neither a fixed VIA nor a usable VIARULE GENERATE: a via made from
+    # the cut layer itself (WIDTH = cut size, ENCLOSURE BELOW / ABOVE = metal overhang, metal at least the routing
+    # WIDTH); named <cut>_SYN so the router prefers real vias (the LEF's, then the design's own DEF vias) over it
+    body = {m.group(1): m.group(2) for m in re.finditer(r'^[ \t]*LAYER[ \t]+(\S+)[ \t]*\r?\n(.*?)^[ \t]*END[ \t]+\1\b', t, re.M | re.S)}
+
+    def num(pat, s, k=1):
+        m = re.search(pat, s, re.M)
+        return [float(v) for v in m.groups()[:k]] if m else None
+    syn = []
+    for i, c in enumerate(order):
+        if types.get(c) != 'CUT' or c in fixed_cuts:
+            continue
+        lo = next((x for x in reversed(order[:i]) if types.get(x) in ('ROUTING', 'MASTERSLICE')), None)
+        hi = next((x for x in order[i + 1:] if types.get(x) in ('ROUTING', 'MASTERSLICE')), None)
+        if types.get(lo) != 'ROUTING' or types.get(hi) != 'ROUTING' or lo in mim or hi in mim or c in mim:
+            continue
+        w = num(r'^\s*WIDTH\s+([\d.]+)\s*;', body.get(c, ''))
+        if not w:
+            continue
+        h = w[0] / 2.
+        both = num(r'^\s*ENCLOSURE\s+([\d.]+)\s+([\d.]+)\s*;', body[c], 2) or [0., 0.]
+        enc = {'BELOW': num(r'^\s*ENCLOSURE\s+BELOW\s+([\d.]+)\s+([\d.]+)', body[c], 2) or both,
+               'ABOVE': num(r'^\s*ENCLOSURE\s+ABOVE\s+([\d.]+)\s+([\d.]+)', body[c], 2) or both}
+        lines = [f'VIA {c}_SYN DEFAULT']
+        for name, side in ((lo, 'BELOW'), (c, None), (hi, 'ABOVE')):
+            lines.append(f'  LAYER {name} ;')
+            if side is None:
+                lines.append(f'    RECT {-h:g} {-h:g} {h:g} {h:g} ;')
+                continue
+            mw = (num(r'^\s*WIDTH\s+([\d.]+)\s*;', body.get(name, '')) or [0.])[0] / 2.
+            ex, ey = max(h + enc[side][0], mw), max(h + enc[side][1], mw)
+            lines.append(f'    RECT {-ex:g} {-ey:g} {ex:g} {ey:g} ;')
+        lines.append(f'END {c}_SYN\n')
+        new.append('\n'.join(lines)); syn.append(f'{c}_SYN({lo}-{hi})'); fixed_cuts.add(c)
     if not new:
         return lefs, []
     k = t.rfind('\nEND LIBRARY')
     k = k if k >= 0 else len(t)
     lefs[0] = _tech_copy(lefs[0], t[:k] + '\n' + '\n'.join(new) + t[k:], 'vias')
-    return lefs, [f'{len(made)} cut layer(s) have only via rules, no fixed via (the router needs one: DRT-0233): '
-                  f'a fixed via is made from each rule ({", ".join(made[:8])})']
+    notes = []
+    if made:
+        notes.append(f'{len(made)} cut layer(s) have only via rules, no fixed via (the router needs one: DRT-0233): '
+                     f'a fixed via is made from each rule ({", ".join(made[:8])})')
+    if syn:
+        notes.append(f'{len(syn)} cut layer(s) have no via at all in the LEF (no VIA, no usable VIARULE GENERATE): a via is '
+                     f'made from the cut layer WIDTH / ENCLOSURE ({", ".join(syn[:8])}); routes use the vias of the '
+                     'design itself (DEF VIAS) first where there are some')
+    return lefs, notes
