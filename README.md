@@ -120,9 +120,13 @@ What is decided for you (each can be overridden):
 - **Candidates and validity**: besides the 18 fixed tree recipes per net, `--trees N` (default 6) adds N Z-shaped trees
   and N/2 detours; `--route all` (default) reroutes and measures every tree, and the final layout takes the policy's
   best valid tree per net (`--route best`: only each ranker's top tree, faster). A candidate is valid when it connects,
-  changes no other net and has no new DRC violation that `--drc-relax` does not tolerate: `none`, `abstract` (default:
-  clashes with other cells' LEF pins / OBS, which may not match the layout), `spacing` (also every MetSpc), `all`. The
-  run ends with the valid count at every level, and the tolerated violations are counted in `s6_apply/apply.json`.
+  changes no other net and has no new DRC violation that `--drc-relax` does not tolerate: `none`, `abstract` (clashes
+  with other cells' LEF pins / OBS, which may not match the layout), `spacing` (default: also every MetSpc; shorts with
+  other nets or power still count), `all`. The run ends with the valid count at every level, and the tolerated
+  violations are counted in `s6_apply/apply.json` and printed with the final layout. When a net's tree is rejected
+  while combining, the final layout tries its next-best valid trees (`--apply-tries N`, default 3). The terminal also
+  shows, per net, how many different routes its trees gave (different trees often route the same way), and a second
+  ranker table that picks among the valid trees, with the measured best as the ceiling.
 - **Policy** (`--policy`): `llm` when the LLM can run (CUDA GPU, or CPU after `tools/install_llm_cpu.sh`);
   otherwise the geometric heuristic. `hybrid`: per net, the z-scored LLM score plus the z-scored heuristic.
 - **Ranker comparison** (`--compare`, on by default with the LLM): the top tree per net of every ranker (LLM, hybrid,
