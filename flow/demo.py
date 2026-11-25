@@ -2,10 +2,12 @@
 """Demo: run the whole flow with a clean screen and draw the reroutes.
 
     python3 flow/demo.py A.def TECH.lef CELLS.lef [run.py options]
+    python3 flow/demo.py            the last demo again (same layout and options; quick, finished stages are reused)
+    python3 flow/demo.py --show     only open the pictures of the last demo
 
 Runs flow/run.py with the same inputs (finished stages are reused, so a second call only redraws), keeps its full
 output in out/<case>/demo/run.log, prints one line per stage and the before/after result, and writes
-out/<case>/demo/index.html: the layout before / after with the rerouted nets marked, and per rerouted net its old and
+out/<case>/demo/index.html (opened in the browser at the end; --no-open: not): the layout before / after with the rerouted nets marked, and per rerouted net its old and
 new route side by side with the coupling (same-layer parallel runs to other nets) shaded.
 
 Options of its own: --no-run (only draw from an existing output folder), --draw N (draw at most N nets, default 8),
@@ -504,8 +506,10 @@ def load_level(out, lv):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], usage='python3 flow/demo.py A.def TECH.lef CELLS.lef [options]')
-    ap.add_argument('inputs', nargs='+')
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], usage='python3 flow/demo.py [A.def TECH.lef CELLS.lef] [options]')
+    ap.add_argument('inputs', nargs='*', help='the layout; left out: the inputs and options of the last demo')
+    ap.add_argument('--show', action='store_true', help='only open the pictures of the last demo (no run, no redraw)')
+    ap.add_argument('--no-open', dest='open', action='store_false', help='do not open the pictures in a browser at the end')
     ap.add_argument('--no-run', action='store_true', help='only draw from an existing output folder')
     ap.add_argument('--draw', dest='max_nets', type=int, default=8, help='draw at most this many rerouted nets per level (default 8)')
     ap.add_argument('--rankers', action='store_true', help='also show the LLM / heuristic / random comparison')
@@ -515,6 +519,44 @@ def main():
     ap.add_argument('--drc-relax', dest='one_level', default=None)
     ap.add_argument('--out', default=None)
     a, rest = ap.parse_known_args()
+    last_f = REPO / 'out' / 'demo_last.json'
+    last = {}
+    try:
+        last = json.loads(last_f.read_text())
+    except (OSError, ValueError):
+        pass
+    if a.show:
+        page = last.get('page')
+        if not page or not Path(page).exists():
+            print('no demo pictures yet: run  python3 flow/demo.py A.def TECH.lef CELLS.lef  first'); sys.exit(1)
+        open_page(Path(page)); return
+    if not a.inputs:   # the last demo again (finished stages are reused, so this is quick)
+        if not last.get('inputs'):
+            print('give the layout the first time:  python3 flow/demo.py A.def TECH.lef CELLS.lef'); sys.exit(2)
+        a.inputs = last['inputs']; rest = last.get('rest', []) + rest
+        for k, v in last.get('opts', {}).items():
+            if getattr(a, k) == ap.get_default(k):
+                setattr(a, k, v)
+        print('(same layout as last time: %s)' % ' '.join(a.inputs))
+        # results of every level kept and newer than the flow code: just show them again
+        o = Path(a.out).resolve() if a.out else None
+        if o is None:
+            f0 = a.inputs[0]
+            o = REPO / 'out' / (re.sub(r'\.def(\.gz)?$', '', Path(f0).name, flags=re.I) if f0.lower().endswith(('.def', '.def.gz')) else f0)
+        lvs = [a.one_level] if a.one_level else [x.strip() for x in a.levels.split(',') if x.strip()]
+        snaps = [o / 'demo' / lv / 'apply.json' for lv in lvs]
+        code_t = max(p.stat().st_mtime for p in list(FLOW.glob('*.py')) + list(FLOW.glob('lib/*.py')))
+        if not a.no_run and snaps and all(s.exists() and s.stat().st_mtime > code_t for s in snaps):
+            a.no_run = True
+            print('(showing the kept results; give the layout again to run the flow anew)')
+    # file inputs as absolute paths (the flow runs in the repository folder)
+    a.inputs = [str(Path(x).resolve()) if Path(x).exists() else x for x in a.inputs]
+    try:
+        last_f.parent.mkdir(parents=True, exist_ok=True)
+        last_f.write_text(json.dumps(dict(inputs=a.inputs, rest=rest, page=last.get('page'),
+                                          opts={k: getattr(a, k) for k in ('max_nets', 'rankers', 'levels', 'one_level', 'out')}), indent=1))
+    except OSError:
+        pass
     levels = [a.one_level] if a.one_level else [x.strip() for x in a.levels.split(',') if x.strip()]
     bad = [x for x in levels if x not in LV_NAME]
     if bad:
@@ -598,9 +640,37 @@ def main():
         page.append((lv, A, R, figs, ov))
     idx = out / 'demo' / 'index.html'
     write_page(idx, case, page, unit, a.rankers)
+    try:
+        d = json.loads(last_f.read_text()); d['page'] = str(idx); last_f.write_text(json.dumps(d, indent=1))
+    except (OSError, ValueError):
+        pass
     print('\nPictures: %s' % idx)
-    print('  open:  firefox %s &' % idx)
     print('  (also as SVG files, and each level\'s final.def, in %s/<level>/)' % (out / 'demo'))
+    if a.open:
+        open_page(idx)
+    print('  open them again any time:  python3 flow/demo.py --show')
+
+
+def open_page(page):
+    """open the pictures in a browser in the background (firefox when there is one); without a display: say where"""
+    import os
+    import shutil
+    if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
+        print('  no display here: open %s in a browser' % page); return
+    for b in ('firefox', 'xdg-open', 'google-chrome', 'chromium'):
+        exe = shutil.which(b)
+        if exe:
+            try:
+                devnull = open(os.devnull, 'w')
+                subprocess.Popen([exe, str(page)], stdout=devnull, stderr=devnull, start_new_session=True)
+                print('  opened in %s' % b); return
+            except OSError:
+                continue
+    import webbrowser
+    if webbrowser.open('file://' + str(page)):
+        print('  opened in the browser')
+    else:
+        print('  open %s in a browser' % page)
 
 
 if __name__ == '__main__':

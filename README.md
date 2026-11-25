@@ -29,7 +29,7 @@ same pictures are also written as SVG files. Two final layouts are shown side by
 that adds a DRC violation) and slightly relaxed (`abstract`: clashes with other cells' LEF pin / OBS abstracts
 tolerated, counted); the candidates and LLM scores are shared, only the final layout is built per level, and each
 level's `final.def` and pictures are kept in `out/<case>/demo/<level>/`. `--levels none,spacing` changes the list,
-`--drc-relax X` shows only X. `--no-run`: only redraw; `--draw N`: at most N nets (default 8);
+`--drc-relax X` shows only X. The pictures open in the browser at the end (firefox; `--no-open`: not). `python3 flow/demo.py` alone repeats the last demo (same layout and options; shows the kept results unless the flow code changed), `python3 flow/demo.py --show` only opens its pictures again. `--no-run`: only redraw; `--draw N`: at most N nets (default 8);
 `--rankers`: also show the LLM / heuristic / random comparison.
 
 ## Coupling scan without OpenROAD (`flow/lite.py`)
