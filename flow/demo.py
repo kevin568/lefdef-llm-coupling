@@ -10,7 +10,9 @@ new route side by side with the coupling (same-layer parallel runs to other nets
 
 Options of its own: --no-run (only draw from an existing output folder), --draw N (draw at most N nets, default 8),
 --rankers (also print the LLM / heuristic / random comparison). Any other option is passed on to run.py.
-The demo keeps only reroutes that add no new DRC violation (--drc-relax none) unless --drc-relax is given."""
+Two final layouts are shown side by side: DRC not relaxed (--drc-relax none: no reroute that adds a DRC violation)
+and slightly relaxed (abstract: clashes with other cells' LEF pin / OBS abstracts tolerated); --levels changes the list,
+--drc-relax X shows only X. The candidates and LLM scores are shared, only the final layout is built per level."""
 import argparse
 import html
 import json
@@ -351,54 +353,24 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')lb.classList
 """
 
 
-def write_page(path, case, A, unit, figs, ov, rankers):
-    K = A['key_metrics']; r, t = K['rerouted_nets'], K['target_nets']; b, f = A['baseline'], A['final']
-    kp = [('%+.1f%%' % r['change_pct'], 'coupling of the %d rerouted net%s' % (r['n'], '' if r['n'] == 1 else 's')),
-          ('%+.1f%%' % t['change_pct'], 'coupling of the %d target nets' % t['n']),
-          ('%+.1f%%' % A['cc_change_pct'], 'whole-design coupling')]
-    rows = [('coupling of the rerouted nets (%s)' % unit, r['cc_before_fF'], r['cc_after_fF'], fmt_pct(r['cc_after_fF'], r['cc_before_fF'])),
-            ('coupling of the %d target nets (%s)' % (t['n'], unit), t['cc_before_fF'], t['cc_after_fF'], fmt_pct(t['cc_after_fF'], t['cc_before_fF'])),
-            ('whole-design coupling (%s)' % unit, b['cc_fF'], f['cc_fF'], fmt_pct(f['cc_fF'], b['cc_fF'])),
-            ('wire length (um)', b['wl_um'], f['wl_um'], fmt_pct(f['wl_um'], b['wl_um'])),
-            ('vias', b['vias'], f['vias'], '%+d' % (f['vias'] - b['vias']))]
-    H = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
-         '<title>Coupling reroute demo</title><style>%s</style></head><body><main>' % PAGE_CSS,
-         '<h1>LLM-guided reroute: %s</h1>' % html.escape(case),
-         '<p class="lead">For the nets with the most coupling, candidate Steiner trees are ranked by the LLM, rerouted on the '
-         'real layout and measured; the final layout keeps the reroutes that lower coupling without breaking other nets.</p>',
-         '<p class="lead"><b>DRC:</b> %s</p>' % html.escape(drc_text(A)),
-         '<div class="kpis">' + ''.join('<div class="kpi"><b>%s</b><span>%s</span></div>' % (v, html.escape(k)) for v, k in kp) + '</div>',
-         '<section><h2>Before / after</h2><table><tr><th>metric</th><th>before</th><th>after</th><th>change</th></tr>']
-    for name, x, y, c in rows:
-        fx = '%d' % x if isinstance(x, int) else '%.2f' % x; fy = '%d' % y if isinstance(y, int) else '%.2f' % y
-        H.append('<tr><td>%s</td><td>%s</td><td>%s</td><td%s>%s</td></tr>'
-                 % (html.escape(name), fx, fy, ' class="g"' if y < x and 'coupling' in name else '', c))
-    H.append('</table>')
-    if A['nets']:
-        H.append('<h2 style="margin-top:18px">Rerouted nets</h2><table><tr><th>net</th><th>coupling before</th><th>after</th>'
-                 '<th>change</th><th>tree</th></tr>')
-        for x in A['nets']:
-            H.append('<tr><td>%s</td><td>%.2f</td><td>%.2f</td><td class="g">%s</td><td>%s</td></tr>'
-                     % (html.escape(clean(x['net'])), x['cc_before_fF'], x['cc_after_fF'], fmt_pct(x['cc_after_fF'], x['cc_before_fF']),
-                        html.escape(x['candidate_id'].split(':')[-1])))
-        H.append('</table>')
-    H.append('</section>')
-    if rankers:
-        H.append('<section><h2>Ranking the same candidates</h2><table><tr><th>ranker</th><th>coupling of the nets</th><th>change</th></tr>')
-        for k, x in rankers.items():
-            H.append('<tr><td>%s</td><td>%.2f &#8594; %.2f</td><td class="g">%+.1f%%</td></tr>' % (html.escape(k), x['cc_before'], x['cc_after'], x['change_pct']))
-        H.append('</table><p class="note">Each ranker\'s top tree per net, rerouted and measured alone.</p></section>')
-    if ov:
-        H.append('<section><h2>Layout</h2><figure>%s<figcaption>The area around the rerouted nets (coloured). Click to enlarge, '
-                 'hover for net and layer.</figcaption></figure></section>' % ov)
-    for name, svg in figs:
-        H.append('<section><figure>%s<figcaption>%s: shaded red where the net runs parallel to another net on the same layer '
-                 '(within 2 routing pitches). Click to enlarge.</figcaption></figure></section>' % (svg, html.escape(clean(name))))
-    if unit != 'fF':
-        H.append('<p class="note">Coupling here is the geometric proxy: um of same-layer parallel run within 2 routing pitches '
-                 '(no extraction rules file for this technology).</p>')
-    H.append('</main><div id="lb"><div></div></div><script>%s</script></body></html>' % PAGE_JS)
-    path.write_text('\n'.join(H) + '\n')
+
+TAB_CSS = """
+.tabs{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}.tabs button{border:1px solid var(--line);background:var(--card);color:var(--ink);
+font:inherit;font-size:15px;padding:8px 14px;border-radius:8px;cursor:pointer}.tabs button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.lv{display:none}.lv.on{display:block}td.sub{color:var(--sub);font-size:13px}
+"""
+
+TAB_JS = """
+document.querySelectorAll('.tabs button').forEach(function(b){b.addEventListener('click',function(){
+document.querySelectorAll('.tabs button').forEach(function(x){x.classList.toggle('on',x===b);});
+document.querySelectorAll('.lv').forEach(function(x){x.classList.toggle('on',x.id===b.dataset.lv);});});});
+"""
+
+LV_NAME = {'none': 'DRC not relaxed', 'abstract': 'DRC relaxed (abstract)', 'spacing': 'DRC relaxed (spacing)', 'all': 'DRC relaxed (all)'}
+
+
+def lv_name(lv):
+    return LV_NAME.get(lv, 'DRC ' + lv)
 
 
 def drc_text(A):
@@ -410,81 +382,225 @@ def drc_text(A):
     return 'relaxed (--drc-relax %s: %s allowed); %d such violation%s in the final layout' % (lv, what, n, '' if n == 1 else 's')
 
 
+def metric_rows(A, unit):
+    """[(name, before, after, change text, is an improvement)] of one final layout"""
+    K = A['key_metrics']; r, t = K['rerouted_nets'], K['target_nets']; b, f = A['baseline'], A['final']
+    return [('coupling of the rerouted nets (%s)' % unit, r['cc_before_fF'], r['cc_after_fF']),
+            ('coupling of the %d target nets (%s)' % (t['n'], unit), t['cc_before_fF'], t['cc_after_fF']),
+            ('whole-design coupling (%s)' % unit, b['cc_fF'], f['cc_fF']),
+            ('wire length (um)', b['wl_um'], f['wl_um']),
+            ('vias', b['vias'], f['vias'])]
+
+
+def num(x):
+    return '%d' % x if isinstance(x, int) else '%.2f' % x
+
+
+def change(name, x, y):
+    return ('%+d' % (y - x)) if isinstance(x, int) else fmt_pct(y, x)
+
+
+def write_page(path, case, res, unit, show_rankers):
+    """res: [(level, A, R, figs, overview svg)]"""
+    H = ['<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
+         '<title>Coupling reroute demo</title><style>%s%s</style></head><body><main>' % (PAGE_CSS, TAB_CSS),
+         '<h1>LLM-guided reroute: %s</h1>' % html.escape(case),
+         '<p class="lead">For the nets with the most coupling, candidate Steiner trees are ranked by the LLM, rerouted on the '
+         'real layout and measured; the final layout keeps the reroutes that lower coupling without breaking other nets. '
+         'Shown for %s.</p>' % ' and '.join(lv_name(lv) for lv, _, _, _, _ in res)]
+    kp = []
+    for lv, A, _, _, _ in res:
+        K = A['key_metrics']
+        kp += [('%+.1f%%' % A['cc_change_pct'], 'whole-design coupling, %s' % lv_name(lv)),
+               ('%+.1f%%' % K['target_nets']['change_pct'], 'coupling of the %d target nets, %s' % (K['target_nets']['n'], lv_name(lv)))]
+    H.append('<div class="kpis">' + ''.join('<div class="kpi"><b>%s</b><span>%s</span></div>' % (v, html.escape(k)) for v, k in kp) + '</div>')
+    # comparison table: before | per level: after, change
+    H.append('<section><h2>Before / after</h2><table><tr><th>metric</th><th>before</th>'
+             + ''.join('<th>after: %s</th><th>change</th>' % html.escape(lv_name(lv)) for lv, _, _, _, _ in res) + '</tr>')
+    rows = [metric_rows(A, unit) for _, A, _, _, _ in res]
+    for i, (name, x, _) in enumerate(rows[0]):
+        cells = ''
+        for rr in rows:
+            n2, x2, y2 = rr[i]
+            good = y2 < x2 and 'coupling' in n2
+            pre = ('%s &#8594; ' % num(x2)) if i == 0 else ''   # the rerouted nets differ per level
+            cells += '<td>%s%s</td><td%s>%s</td>' % (pre, num(y2), ' class="g"' if good else '', change(n2, x2, y2))
+        H.append('<tr><td>%s</td><td>%s</td>%s</tr>' % (html.escape(name), '' if i == 0 else num(x), cells))
+    H.append('<tr><td>nets rerouted</td><td></td>' + ''.join('<td>%d</td><td></td>' % A['accepted'] for _, A, _, _, _ in res) + '</tr>')
+    H.append('<tr><td>new DRC violations tolerated</td><td></td>'
+             + ''.join('<td>%d</td><td></td>' % A.get('tolerated_violations', 0) for _, A, _, _, _ in res) + '</tr>')
+    H.append('</table>')
+    H.append(''.join('<p class="note"><b>%s:</b> %s</p>' % (html.escape(lv_name(lv)), html.escape(drc_text(A))) for lv, A, _, _, _ in res))
+    H.append('</section>')
+    # one tab per level: rerouted nets, layout, per-net figures
+    H.append('<div class="tabs">' + ''.join('<button data-lv="lv_%s"%s>%s</button>' % (lv, ' class="on"' if k == 0 else '', html.escape(lv_name(lv)))
+                                            for k, (lv, _, _, _, _) in enumerate(res)) + '</div>')
+    for k, (lv, A, R, figs, ov) in enumerate(res):
+        H.append('<div class="lv%s" id="lv_%s">' % (' on' if k == 0 else '', lv))
+        if A['nets']:
+            H.append('<section><h2>Rerouted nets: %s</h2><table><tr><th>net</th><th>coupling before</th><th>after</th>'
+                     '<th>change</th><th>tree</th></tr>' % html.escape(lv_name(lv)))
+            for x in A['nets']:
+                H.append('<tr><td>%s</td><td>%.2f</td><td>%.2f</td><td class="g">%s</td><td>%s</td></tr>'
+                         % (html.escape(clean(x['net'])), x['cc_before_fF'], x['cc_after_fF'], fmt_pct(x['cc_after_fF'], x['cc_before_fF']),
+                            html.escape(x['candidate_id'].split(':')[-1])))
+            H.append('</table></section>')
+        rk = {q: R['rankers'][q] for q in ('llm', 'heuristic', 'random') if q in (R.get('rankers') or {})} if show_rankers else {}
+        if rk:
+            H.append('<section><h2>Ranking the same candidates</h2><table><tr><th>ranker</th><th>coupling of the nets</th><th>change</th></tr>')
+            for q, x in rk.items():
+                H.append('<tr><td>%s</td><td>%.2f &#8594; %.2f</td><td class="g">%+.1f%%</td></tr>' % (html.escape(q), x['cc_before'], x['cc_after'], x['change_pct']))
+            H.append('</table><p class="note">Each ranker\'s top tree per net, rerouted and measured alone.</p></section>')
+        if ov:
+            H.append('<section><h2>Layout: %s</h2><figure>%s<figcaption>The area around the rerouted nets (coloured). Click to '
+                     'enlarge, hover for net and layer.</figcaption></figure></section>' % (html.escape(lv_name(lv)), ov))
+        for name, svg in figs:
+            H.append('<section><figure>%s<figcaption>%s (%s): shaded red where the net runs parallel to another net on the same '
+                     'layer (within 2 routing pitches). Click to enlarge.</figcaption></figure></section>'
+                     % (svg, html.escape(clean(name)), html.escape(lv_name(lv))))
+        if not A['nets']:
+            H.append('<section><p>No reroute kept at this level.</p></section>')
+        H.append('</div>')
+    if unit != 'fF':
+        H.append('<p class="note">Coupling here is the geometric proxy: um of same-layer parallel run within 2 routing pitches '
+                 '(no extraction rules file for this technology).</p>')
+    H.append('</main><div id="lb"><div></div></div><script>%s%s</script></body></html>' % (PAGE_JS, TAB_JS))
+    path.write_text('\n'.join(H) + '\n')
+
+
 # ----------------------------------------------------------------------------------------------- main
 
-def final_geo(out, A):
+def final_geo_path(A):
     acc = [s for s in A['steps'] if s.get('accepted')]
-    if not acc:
+    return Path(acc[-1]['dir']) / 'geo.json' if acc else None
+
+
+def snapshot(out, lv):
+    """keep this level's final layout results (the next level overwrites s6_apply / report)"""
+    import shutil
+    d = out / 'demo' / lv; d.mkdir(parents=True, exist_ok=True)
+    for f in ('s6_apply/apply.json', 'report.json'):
+        if (out / f).exists():
+            shutil.copyfile(str(out / f), str(d / Path(f).name))
+    A = json.loads((out / 's6_apply' / 'apply.json').read_text())
+    g = final_geo_path(A)
+    if g and g.exists():
+        shutil.copyfile(str(g), str(d / 'final_geo.json'))
+    elif (d / 'final_geo.json').exists():
+        (d / 'final_geo.json').unlink()
+    for x in ('final.def', 'final.spef'):
+        if (out / 's6_apply' / x).exists():
+            shutil.copyfile(str(out / 's6_apply' / x), str(d / x))
+
+
+def load_level(out, lv):
+    d = out / 'demo' / lv
+    if not (d / 'apply.json').exists():
         return None
-    g = Path(acc[-1]['dir']) / 'geo.json'
-    return json.loads(g.read_text()) if g.exists() else None
+    A = json.loads((d / 'apply.json').read_text())
+    R = json.loads((d / 'report.json').read_text()) if (d / 'report.json').exists() else {}
+    G = json.loads((d / 'final_geo.json').read_text()) if (d / 'final_geo.json').exists() else None
+    return A, R, G
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], usage='python3 flow/demo.py A.def TECH.lef CELLS.lef [options]')
     ap.add_argument('inputs', nargs='+')
     ap.add_argument('--no-run', action='store_true', help='only draw from an existing output folder')
-    ap.add_argument('--draw', dest='max_nets', type=int, default=8, help='draw at most this many rerouted nets (default 8)')
+    ap.add_argument('--draw', dest='max_nets', type=int, default=8, help='draw at most this many rerouted nets per level (default 8)')
     ap.add_argument('--rankers', action='store_true', help='also show the LLM / heuristic / random comparison')
+    ap.add_argument('--levels', default='none,abstract',
+                    help='DRC levels to show, comma-separated (default none,abstract: not relaxed, and clashes with cell '
+                         'LEF abstracts tolerated); --drc-relax X shows only X')
+    ap.add_argument('--drc-relax', dest='one_level', default=None)
     ap.add_argument('--out', default=None)
     a, rest = ap.parse_known_args()
+    levels = [a.one_level] if a.one_level else [x.strip() for x in a.levels.split(',') if x.strip()]
+    bad = [x for x in levels if x not in LV_NAME]
+    if bad:
+        print('unknown DRC level(s): %s (use none, abstract, spacing, all)' % ', '.join(bad)); sys.exit(2)
     first = a.inputs[0]
     case = re.sub(r'\.def(\.gz)?$', '', Path(first).name, flags=re.I) if first.lower().endswith(('.def', '.def.gz')) else first
     out = Path(a.out).resolve() if a.out else REPO / 'out' / case
     print('LLM-guided coupling reroute: %s' % case)
     if not a.no_run:
-        # the demo shows the layout without DRC relaxation unless asked otherwise (--drc-relax abstract / spacing / all)
-        relax = [] if any(x == '--drc-relax' or x.startswith('--drc-relax=') for x in rest) else ['--drc-relax', 'none']
-        argv = a.inputs + rest + relax + (['--out', str(out)] if a.out else [])
-        if run_flow(argv, out / 'demo' / 'run.log'):
-            sys.exit(1)
-    ap_f = out / 's6_apply' / 'apply.json'
-    if not ap_f.exists():
-        print('  no final layout in %s yet: run without --no-run first' % out); sys.exit(1)
-    A = json.loads(ap_f.read_text())
-    if 'key_metrics' not in A:
-        print('  %s was written by an older flow: run without --no-run once' % ap_f); sys.exit(1)
-    R = json.loads((out / 'report.json').read_text()) if (out / 'report.json').exists() else {}
+        order = list(levels)
+        try:   # the level the output folder holds now goes first (nothing to redo for it)
+            cur = json.loads((out / 'selection.json').read_text()).get('drc_relax')
+            if cur in order:
+                order.remove(cur); order.insert(0, cur)
+        except (OSError, ValueError):
+            pass
+        for k, lv in enumerate(order):
+            print('\n%s (%d/%d)' % (lv_name(lv), k + 1, len(order)))
+            argv = a.inputs + rest + ['--drc-relax', lv] + (['--out', str(out)] if a.out else [])
+            if run_flow(argv, out / 'demo' / ('run_%s.log' % lv)):
+                sys.exit(1)
+            snapshot(out, lv)
+    res = []
+    for lv in levels:
+        got = load_level(out, lv)
+        if not got:
+            print('  no result for %s in %s yet: run without --no-run first' % (lv_name(lv), out)); continue
+        if 'key_metrics' not in got[0]:
+            print('  the %s result was written by an older flow: run without --no-run once' % lv_name(lv)); continue
+        res.append((lv,) + got)
+    if not res:
+        sys.exit(1)
     unit = 'fF' if (out / 'inputs.json').exists() and json.loads((out / 'inputs.json').read_text()).get('rules_sha256') != 'proxy' else 'um'
-    K = A['key_metrics']; r, t = K['rerouted_nets'], K['target_nets']; b, f = A['baseline'], A['final']
+    # screen: one column per level
+    W = 34
     print('\nResult (coupling%s)' % (' in fF' if unit == 'fF' else ': um of same-layer parallel run'))
-    print('  DRC: ' + drc_text(A))
-    print('  rerouted nets   %9.2f -> %9.2f   %s   (%d net%s)' % (r['cc_before_fF'], r['cc_after_fF'], fmt_pct(r['cc_after_fF'], r['cc_before_fF']),
-                                                        r['n'], '' if r['n'] == 1 else 's'))
-    print('  target nets     %9.2f -> %9.2f   %s   (the %d nets with the most coupling)' % (t['cc_before_fF'], t['cc_after_fF'],
-                                                                                         fmt_pct(t['cc_after_fF'], t['cc_before_fF']), t['n']))
-    print('  whole design    %9.2f -> %9.2f   %s' % (b['cc_fF'], f['cc_fF'], fmt_pct(f['cc_fF'], b['cc_fF'])))
-    print('  wire length     %9.1f -> %9.1f   %s   um' % (b['wl_um'], f['wl_um'], fmt_pct(f['wl_um'], b['wl_um'])))
-    print('  vias            %9d -> %9d   %+d' % (b['vias'], f['vias'], f['vias'] - b['vias']))
-    if A['nets']:
-        print('\nRerouted nets')
-        for x in A['nets']:
-            print('  %-24s %8.2f -> %8.2f   %s' % (clean(x['net'])[:24], x['cc_before_fF'], x['cc_after_fF'],
-                                               fmt_pct(x['cc_after_fF'], x['cc_before_fF'])))
-    rk = {}
-    if a.rankers and R.get('rankers'):
-        rk = {k: R['rankers'][k] for k in ('llm', 'heuristic', 'random') if k in R['rankers']}
-        print('\nRanking the same candidates (top tree per net, each rerouted alone)')
-        for k, x in rk.items():
-            print('  %-10s %9.2f -> %9.2f   %+.1f%%' % (k, x['cc_before'], x['cc_after'], x['change_pct']))
+    print('  %-16s' % '' + ''.join('%-*s' % (W, lv_name(lv)) for lv, _, _, _ in res))
+    rows = [metric_rows(A, unit) for _, A, _, _ in res]
+    short = ['rerouted nets', 'target nets', 'whole design', 'wire length', 'vias']
+    for i, lab in enumerate(short):
+        cells = ''
+        for rr in rows:
+            n2, x2, y2 = rr[i]
+            cells += '%-*s' % (W, '%s -> %s  %s' % (num(x2), num(y2), change(n2, x2, y2)))
+        print('  %-16s%s' % (lab, cells))
+    print('  %-16s' % 'nets rerouted' + ''.join('%-*s' % (W, A['accepted']) for _, A, _, _ in res))
+    print('  %-16s' % 'DRC tolerated' + ''.join('%-*s' % (W, '%d new violation(s)' % A.get('tolerated_violations', 0) if A.get('drc_relax') != 'none'
+                                                          else 'none (no new DRC)') for _, A, _, _ in res))
+    for lv, A, R, _ in res:
+        if A['nets']:
+            print('\nRerouted nets, %s' % lv_name(lv))
+            for x in A['nets']:
+                print('  %-24s %8.2f -> %8.2f   %s' % (clean(x['net'])[:24], x['cc_before_fF'], x['cc_after_fF'],
+                                                   fmt_pct(x['cc_after_fF'], x['cc_before_fF'])))
+        if a.rankers and R.get('rankers'):
+            print('  ranking the same candidates (top tree per net, each rerouted alone):')
+            for q in ('llm', 'heuristic', 'random'):
+                if q in R['rankers']:
+                    x = R['rankers'][q]
+                    print('    %-10s %9.2f -> %9.2f   %+.1f%%' % (q, x['cc_before'], x['cc_after'], x['change_pct']))
     # figures
-    before = json.loads((out / 's1_import' / 'geo.json').read_text()); after = final_geo(out, A)
-    d = out / 'demo'; d.mkdir(parents=True, exist_ok=True)
-    figs = []; ov = ''
-    if after:
-        nets = [x['net'] for x in sorted(A['nets'], key=lambda x: -(x['cc_before_fF'] - x['cc_after_fF']))][:max(a.max_nets, 0)]
-        ov = overview_figure(before, after, nets)
-        (d / 'overview.svg').write_text(ov + '\n')
-        recs = {x['net']: dict(x, _unit=unit, _policy=A.get('policy', 'llm')) for x in A['nets']}
-        for i, n in enumerate(nets):
-            if n not in before['nets'] or n not in after['nets']:
-                continue
-            svg = net_figure(before, after, n, recs[n], i, len(nets))
-            figs.append((n, svg)); (d / ('net_%02d_%s.svg' % (i + 1, re.sub(r'[^A-Za-z0-9_.-]+', '_', clean(n))))).write_text(svg + '\n')
-    write_page(d / 'index.html', case, A, unit, figs, ov, rk)
-    print('\nPictures: %s' % (d / 'index.html'))
-    print('  open:  firefox %s &' % (d / 'index.html'))
-    print('  (also as separate SVG files in %s)' % d)
+    before = json.loads((out / 's1_import' / 'geo.json').read_text())
+    for old in (out / 'demo').glob('*.svg'):   # pictures of an earlier one-level demo
+        old.unlink()
+    page = []
+    for lv, A, R, after in res:
+        d = out / 'demo' / lv; figs = []; ov = ''
+        for old in d.glob('*.svg'):
+            old.unlink()
+        if after:
+            nets = [x['net'] for x in sorted(A['nets'], key=lambda x: -(x['cc_before_fF'] - x['cc_after_fF']))][:max(a.max_nets, 0)]
+            ov = overview_figure(before, after, nets)
+            (d / 'overview.svg').write_text(ov + '\n')
+            recs = {x['net']: dict(x, _unit=unit, _policy=A.get('policy', 'llm')) for x in A['nets']}
+            for i, n in enumerate(nets):
+                if n not in before['nets'] or n not in after['nets']:
+                    continue
+                svg = net_figure(before, after, n, recs[n], i, len(nets))
+                figs.append((n, svg))
+                (d / ('net_%02d_%s.svg' % (i + 1, re.sub(r'[^A-Za-z0-9_.-]+', '_', clean(n))))).write_text(svg + '\n')
+        page.append((lv, A, R, figs, ov))
+    idx = out / 'demo' / 'index.html'
+    write_page(idx, case, page, unit, a.rankers)
+    print('\nPictures: %s' % idx)
+    print('  open:  firefox %s &' % idx)
+    print('  (also as SVG files, and each level\'s final.def, in %s/<level>/)' % (out / 'demo'))
 
 
 if __name__ == '__main__':
