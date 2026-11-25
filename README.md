@@ -25,7 +25,9 @@ redraws). The screen shows one line per stage and the before/after result; the f
 `out/<case>/demo/run.log`. Pictures: `out/<case>/demo/index.html` (open with `firefox`): the area around the
 rerouted nets before and after, and per rerouted net its old and new route side by side, coupling shaded red (same-layer
 parallel runs to other nets), coupled neighbours orange; click a picture to enlarge, hover for net and layer. The
-same pictures are also written as SVG files. `--no-run`: only redraw; `--draw N`: at most N nets (default 8);
+same pictures are also written as SVG files. The demo keeps only reroutes that add no new DRC violation
+(`--drc-relax none`); add `--drc-relax abstract` (or `spacing`) for the relaxed result, which the screen and page
+then name with the number of tolerated violations. `--no-run`: only redraw; `--draw N`: at most N nets (default 8);
 `--rankers`: also show the LLM / heuristic / random comparison.
 
 ## Coupling scan without OpenROAD (`flow/lite.py`)

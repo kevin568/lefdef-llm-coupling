@@ -9,7 +9,8 @@ out/<case>/demo/index.html: the layout before / after with the rerouted nets mar
 new route side by side with the coupling (same-layer parallel runs to other nets) shaded.
 
 Options of its own: --no-run (only draw from an existing output folder), --draw N (draw at most N nets, default 8),
---rankers (also print the LLM / heuristic / random comparison). Any other option is passed on to run.py."""
+--rankers (also print the LLM / heuristic / random comparison). Any other option is passed on to run.py.
+The demo keeps only reroutes that add no new DRC violation (--drc-relax none) unless --drc-relax is given."""
 import argparse
 import html
 import json
@@ -365,6 +366,7 @@ def write_page(path, case, A, unit, figs, ov, rankers):
          '<h1>LLM-guided reroute: %s</h1>' % html.escape(case),
          '<p class="lead">For the nets with the most coupling, candidate Steiner trees are ranked by the LLM, rerouted on the '
          'real layout and measured; the final layout keeps the reroutes that lower coupling without breaking other nets.</p>',
+         '<p class="lead"><b>DRC:</b> %s</p>' % html.escape(drc_text(A)),
          '<div class="kpis">' + ''.join('<div class="kpi"><b>%s</b><span>%s</span></div>' % (v, html.escape(k)) for v, k in kp) + '</div>',
          '<section><h2>Before / after</h2><table><tr><th>metric</th><th>before</th><th>after</th><th>change</th></tr>']
     for name, x, y, c in rows:
@@ -399,6 +401,15 @@ def write_page(path, case, A, unit, figs, ov, rankers):
     path.write_text('\n'.join(H) + '\n')
 
 
+def drc_text(A):
+    lv = A.get('drc_relax', 'none'); n = A.get('tolerated_violations', 0)
+    if lv == 'none':
+        return 'every reroute kept adds no new DRC violation (no relaxation)'
+    what = {'abstract': 'clashes with other cells\' LEF pin / OBS abstracts', 'spacing': 'abstract clashes and spacing violations',
+            'all': 'any violation'}.get(lv, lv)
+    return 'relaxed (--drc-relax %s: %s allowed); %d such violation%s in the final layout' % (lv, what, n, '' if n == 1 else 's')
+
+
 # ----------------------------------------------------------------------------------------------- main
 
 def final_geo(out, A):
@@ -422,7 +433,9 @@ def main():
     out = Path(a.out).resolve() if a.out else REPO / 'out' / case
     print('LLM-guided coupling reroute: %s' % case)
     if not a.no_run:
-        argv = a.inputs + rest + (['--out', str(out)] if a.out else [])
+        # the demo shows the layout without DRC relaxation unless asked otherwise (--drc-relax abstract / spacing / all)
+        relax = [] if any(x == '--drc-relax' or x.startswith('--drc-relax=') for x in rest) else ['--drc-relax', 'none']
+        argv = a.inputs + rest + relax + (['--out', str(out)] if a.out else [])
         if run_flow(argv, out / 'demo' / 'run.log'):
             sys.exit(1)
     ap_f = out / 's6_apply' / 'apply.json'
@@ -435,6 +448,7 @@ def main():
     unit = 'fF' if (out / 'inputs.json').exists() and json.loads((out / 'inputs.json').read_text()).get('rules_sha256') != 'proxy' else 'um'
     K = A['key_metrics']; r, t = K['rerouted_nets'], K['target_nets']; b, f = A['baseline'], A['final']
     print('\nResult (coupling%s)' % (' in fF' if unit == 'fF' else ': um of same-layer parallel run'))
+    print('  DRC: ' + drc_text(A))
     print('  rerouted nets   %9.2f -> %9.2f   %s   (%d net%s)' % (r['cc_before_fF'], r['cc_after_fF'], fmt_pct(r['cc_after_fF'], r['cc_before_fF']),
                                                         r['n'], '' if r['n'] == 1 else 's'))
     print('  target nets     %9.2f -> %9.2f   %s   (the %d nets with the most coupling)' % (t['cc_before_fF'], t['cc_after_fF'],
