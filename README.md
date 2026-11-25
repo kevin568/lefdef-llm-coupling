@@ -25,11 +25,7 @@ redraws). The screen shows one line per stage and the before/after result; the f
 `out/<case>/demo/run.log`. Pictures: `out/<case>/demo/index.html` (open with `firefox`): the area around the
 rerouted nets before and after, and per rerouted net its old and new route side by side, coupling shaded red (same-layer
 parallel runs to other nets), coupled neighbours orange; click a picture to enlarge, hover for net and layer. The
-same pictures are also written as SVG files. Two final layouts are shown side by side: DRC not relaxed (no reroute
-that adds a DRC violation) and slightly relaxed (`abstract`: clashes with other cells' LEF pin / OBS abstracts
-tolerated, counted); the candidates and LLM scores are shared, only the final layout is built per level, and each
-level's `final.def` and pictures are kept in `out/<case>/demo/<level>/`. `--levels none,spacing` changes the list,
-`--drc-relax X` shows only X. The pictures open in the browser at the end (firefox; `--no-open`: not). `python3 flow/demo.py` alone repeats the last demo (same layout and options; shows the kept results unless the flow code changed), `python3 flow/demo.py --show` only opens its pictures again. `--no-run`: only redraw; `--draw N`: at most N nets (default 8);
+same pictures are also written as SVG files. The final layout keeps only reroutes that add no DRC violation (`--drc-relax none`); `--levels none,abstract` also shows a relaxed layout side by side (clashes with other cells' LEF pin / OBS abstracts tolerated, counted; candidates and LLM scores shared), each level's `final.def` and pictures in `out/<case>/demo/<level>/`; `--drc-relax X` shows only X. The pictures open in the browser at the end (firefox; `--no-open`: not). `python3 flow/demo.py` alone repeats the last demo (same layout and options; shows the kept results unless the flow code changed), `python3 flow/demo.py --show` only opens its pictures again. `--no-run`: only redraw; `--draw N`: at most N nets (default 8);
 `--rankers`: also show the LLM / heuristic / random comparison.
 
 ## Coupling scan without OpenROAD (`flow/lite.py`)

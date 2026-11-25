@@ -12,9 +12,9 @@ new route side by side with the coupling (same-layer parallel runs to other nets
 
 Options of its own: --no-run (only draw from an existing output folder), --draw N (draw at most N nets, default 8),
 --rankers (also print the LLM / heuristic / random comparison). Any other option is passed on to run.py.
-Two final layouts are shown side by side: DRC not relaxed (--drc-relax none: no reroute that adds a DRC violation)
-and slightly relaxed (abstract: clashes with other cells' LEF pin / OBS abstracts tolerated); --levels changes the list,
---drc-relax X shows only X. The candidates and LLM scores are shared, only the final layout is built per level."""
+The final layout keeps only reroutes that add no DRC violation (--drc-relax none). --levels none,abstract also
+shows a relaxed layout side by side (candidates and LLM scores shared, only the final layout built per level);
+--drc-relax X shows only X."""
 import argparse
 import html
 import json
@@ -409,7 +409,7 @@ def write_page(path, case, res, unit, show_rankers):
          '<h1>LLM-guided reroute: %s</h1>' % html.escape(case),
          '<p class="lead">For the nets with the most coupling, candidate Steiner trees are ranked by the LLM, rerouted on the '
          'real layout and measured; the final layout keeps the reroutes that lower coupling without breaking other nets. '
-         'Shown for %s.</p>' % ' and '.join(lv_name(lv) for lv, _, _, _, _ in res)]
+         '%s</p>' % ('Shown for %s.' % ' and '.join(lv_name(lv) for lv, _, _, _, _ in res) if len(res) > 1 else 'No DRC relaxation: every reroute kept adds no new DRC violation.')]
     kp = []
     for lv, A, _, _, _ in res:
         K = A['key_metrics']
@@ -435,8 +435,9 @@ def write_page(path, case, res, unit, show_rankers):
     H.append(''.join('<p class="note"><b>%s:</b> %s</p>' % (html.escape(lv_name(lv)), html.escape(drc_text(A))) for lv, A, _, _, _ in res))
     H.append('</section>')
     # one tab per level: rerouted nets, layout, per-net figures
-    H.append('<div class="tabs">' + ''.join('<button data-lv="lv_%s"%s>%s</button>' % (lv, ' class="on"' if k == 0 else '', html.escape(lv_name(lv)))
-                                            for k, (lv, _, _, _, _) in enumerate(res)) + '</div>')
+    if len(res) > 1:
+        H.append('<div class="tabs">' + ''.join('<button data-lv="lv_%s"%s>%s</button>' % (lv, ' class="on"' if k == 0 else '', html.escape(lv_name(lv)))
+                                                for k, (lv, _, _, _, _) in enumerate(res)) + '</div>')
     for k, (lv, A, R, figs, ov) in enumerate(res):
         H.append('<div class="lv%s" id="lv_%s">' % (' on' if k == 0 else '', lv))
         if A['nets']:
@@ -513,9 +514,9 @@ def main():
     ap.add_argument('--no-run', action='store_true', help='only draw from an existing output folder')
     ap.add_argument('--draw', dest='max_nets', type=int, default=8, help='draw at most this many rerouted nets per level (default 8)')
     ap.add_argument('--rankers', action='store_true', help='also show the LLM / heuristic / random comparison')
-    ap.add_argument('--levels', default='none,abstract',
-                    help='DRC levels to show, comma-separated (default none,abstract: not relaxed, and clashes with cell '
-                         'LEF abstracts tolerated); --drc-relax X shows only X')
+    ap.add_argument('--levels', default='none',
+                    help='DRC levels to show, comma-separated (default none: no DRC relaxation; e.g. none,abstract adds the '
+                         'layout with clashes with cell LEF abstracts tolerated, side by side); --drc-relax X shows only X')
     ap.add_argument('--drc-relax', dest='one_level', default=None)
     ap.add_argument('--out', default=None)
     a, rest = ap.parse_known_args()
