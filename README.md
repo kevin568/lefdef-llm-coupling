@@ -14,6 +14,20 @@ What you get per layout: for each high-coupling net, the model's best rerouting 
 capacitance before and after, the change of the whole design's coupling, wire length and via changes, and whether
 the reroute is legal (target connected, no new DRC violation, every other net untouched).
 
+## Demo (`flow/demo.py`)
+
+```
+python3 flow/demo.py A.def TECH.lef CELLS.lef
+```
+
+Runs the same flow as `flow/run.py` (same inputs and options; finished stages are reused, so a second call only
+redraws). The screen shows one line per stage and the before/after result; the full flow output goes to
+`out/<case>/demo/run.log`. Pictures: `out/<case>/demo/index.html` (open with `firefox`): the area around the
+rerouted nets before and after, and per rerouted net its old and new route side by side, coupling shaded red (same-layer
+parallel runs to other nets), coupled neighbours orange; click a picture to enlarge, hover for net and layer. The
+same pictures are also written as SVG files. `--no-run`: only redraw; `--draw N`: at most N nets (default 8);
+`--rankers`: also show the LLM / heuristic / random comparison.
+
 ## Coupling scan without OpenROAD (`flow/lite.py`)
 
 ```bash
